@@ -65,7 +65,7 @@ inline bool is_system_code_wildcard(const uint8_t sc[2])
 namespace m5 {
 namespace nfc {
 
-bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size)
+bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*))
 {
     if (_state != State::None) {
         M5_LIB_LOGW("Already started");
@@ -82,6 +82,7 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
     _picc        = picc;
     _memory      = ptr;
     _memory_size = size;
+    _callback    = callback;
 
     /*
     if (!_picc.valid() || !_memory || _memory_size < _picc.totalSize()) {
@@ -154,6 +155,14 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 {
     if (!rx || rx_len < 2) {
         return State::Communicated;
+    }
+
+    if(_callback != nullptr){
+        static uint8_t tx[256];
+        static uint32_t tx_len;
+        _callback(rx, rx_len, tx, &tx_len);
+
+        return _impl->transmit(tx, tx_len, tx_len * 2) ? State::Selected : s;
     }
 
     State ret = s;

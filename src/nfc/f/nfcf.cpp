@@ -317,7 +317,8 @@ bool PICC::valid() const
 bool PICC::validEmulation() const
 {
     // Currently only Lite-S
-    return (type == Type::FeliCaLiteS) && valid() && emulation_sc == 0x88B4;
+    //return (type == Type::FeliCaLiteS) && valid() && emulation_sc == 0x88B4;
+    return valid();
 }
 
 std::string PICC::idmAsString() const
@@ -339,15 +340,16 @@ std::string PICC::typeAsString() const
 bool PICC::emulate(const Type t, const uint8_t idm[FELICA_ID_LENGTH], const uint8_t pmm[FELICA_ID_LENGTH],
                    const uint16_t sc /*Options for the future*/)
 {
-    (void)sc;
-    if (t != Type::FeliCaLiteS || !idm || !pmm) {
+    // if (t != Type::FeliCaLiteS || !idm || !pmm) {
+    if (!idm || !pmm) {
         return false;
     }
 
     this->type = t;
     memcpy(this->idm, idm, sizeof(this->idm));
     memcpy(this->pmm, pmm, sizeof(this->pmm));
-    this->emulation_sc = 0x88B4;  // Base system code
+    //this->emulation_sc = 0x88B4;  // Base system code
+    this->emulation_sc = sc;
     this->format       = format_lite;
 
     return validEmulation();

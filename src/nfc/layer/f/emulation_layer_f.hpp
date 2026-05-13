@@ -70,7 +70,7 @@ public:
     }
 
     //! @brief Begin NFC-F emulation
-    bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size);
+    bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr);
     //! @brief End NFC-F emulation
     bool end();
     //! @brief Update emulation state machine
@@ -96,6 +96,8 @@ private:
     unsigned int _expired_at{};
     std::unique_ptr<Adapter> _impl;
     m5::nfc::f::PICC _picc{};
+
+    void (*_callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*);
 };
 
 ///@cond
