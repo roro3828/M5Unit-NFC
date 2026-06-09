@@ -70,7 +70,7 @@ public:
     }
 
     //! @brief Begin NFC-F emulation
-    bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr);
+    bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr, const bool auto_res = true, const bool listen_any = false);
     //! @brief End NFC-F emulation
     bool end();
     //! @brief Update emulation state machine
@@ -105,7 +105,7 @@ private:
 struct EmulationLayerF::Adapter {
     virtual ~Adapter() = default;
 
-    virtual bool start_emulation(const m5::nfc::f::PICC& picc)                                 = 0;
+    virtual bool start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res = true, const bool listen_any = false) = 0;
     virtual bool stop_emulation()                                                              = 0;
     virtual bool transmit(const uint8_t* tx, const uint16_t tx_len, const uint32_t timeout_ms) = 0;
 

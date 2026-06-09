@@ -65,7 +65,7 @@ inline bool is_system_code_wildcard(const uint8_t sc[2])
 namespace m5 {
 namespace nfc {
 
-bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*))
+bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size, void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*), const bool auto_res, const bool listen_any)
 {
     if (_state != State::None) {
         M5_LIB_LOGW("Already started");
@@ -92,7 +92,7 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
     }
     */
 
-    _state = _impl->start_emulation(_picc) ? State::Off : State::None;
+    _state = _impl->start_emulation(_picc, auto_res, listen_any) ? State::Off : State::None;
     _prev  = State::None;
 
     _expired_at = m5::utility::millis() + _expired_ms;

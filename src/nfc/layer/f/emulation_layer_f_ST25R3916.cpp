@@ -75,7 +75,7 @@ struct ListenerST25R3916ForF final : EmulationLayerF::Adapter {
     }
     */
 
-    virtual bool start_emulation(const m5::nfc::f::PICC& picc) override;
+    virtual bool start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res = true, const bool listen_any = false) override;
     virtual bool stop_emulation() override;
     virtual bool transmit(const uint8_t* tx, const uint16_t tx_len, const uint32_t timeout_ms) override;
 
@@ -102,6 +102,9 @@ struct ListenerST25R3916ForF final : EmulationLayerF::Adapter {
 
     EmulationLayerF& _layer;
     UnitST25R3916& _u;
+
+    bool _auto_sensf_res;
+    bool _listen_any_poll;
 };
 
 uint32_t ListenerST25R3916ForF::get_irq(const uint32_t bits)
@@ -161,7 +164,7 @@ bool ListenerST25R3916ForF::load_config(const m5::nfc::f::PICC& picc)
     return _u.writePtMemoryF(wbuf, sizeof(wbuf)) && _u.writePtMemoryTSN(tsn, sizeof(tsn));
 }
 
-bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc)
+bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res, const bool listen_any)
 {
     if (!load_config(picc)) {
         return false;
@@ -173,11 +176,20 @@ bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc)
         m5::utility::log::dump(rbuf, PT_MEMORY_LENGTH, false);
     }
 
+    this->_auto_sensf_res = auto_res;
+    this->_listen_any_poll = listen_any;
+
     // Auto response  only NFC-F
-    _u.change_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_ac_ap2p | d_106_ac_a,
-                            d_ac_ap2p | d_212_424_1r | d_106_ac_a);
-    //_u.change_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_ac_ap2p | d_106_ac_a|d_212_424_1r,
-    //                            d_ac_ap2p | d_212_424_1r | d_106_ac_a);
+    if(this->_auto_sensf_res){
+        _u.change_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_ac_ap2p | d_106_ac_a,
+                                d_ac_ap2p | d_212_424_1r | d_106_ac_a);
+        //_u.change_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_ac_ap2p | d_106_ac_a|d_212_424_1r,
+        //                            d_ac_ap2p | d_212_424_1r | d_106_ac_a);
+    }
+    else{
+        _u.change_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_ac_ap2p | d_106_ac_a | d_212_424_1r,
+                                d_ac_ap2p | d_212_424_1r | d_106_ac_a);
+    }
 
     // Disable GPT trigger source
     _u.change_bit_register8(REG_TIMER_AND_EMV_CONTROL, 0x00, 0xE0);
@@ -240,7 +252,13 @@ EmulationLayerF::State ListenerST25R3916ForF::goto_off()
     _u.writeDirectCommand(CMD_STOP_ALL_ACTIVITIES);
     _u.set_bit_register8(REG_OPERATION_CONTROL, rx_en);
 
-    _u.clear_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_212_424_1r);  // Enable auto response for NFC-F
+    if(this->_auto_sensf_res){
+        _u.clear_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_212_424_1r);  // Enable auto response for NFC-F
+    }
+    else{
+        _u.set_bit_register8(REG_NFCIP_1_PASSIVE_TARGET_DEFINITION, d_212_424_1r);
+    }
+
     _u.clear_bit_register8(REG_ISO14443A_SETTINGS, nfc_f0);
 
     _u.writeMaskInterrupts(0xFFFFFFFF);
@@ -366,6 +384,26 @@ EmulationLayerF::State ListenerST25R3916ForF::update_communicated()
             }
             return goto_selected();
         }
+    }
+
+    if(this->_listen_any_poll && _bitrate != Bitrate::Invalid){
+        uint16_t bytes{};
+        uint8_t bits{};
+        uint8_t rx[128]{};
+        uint16_t rx_len{}, actual{};
+        _u.readFIFOSize(bytes, bits);
+        rx_len = std::min<uint16_t>(bytes, sizeof(rx));
+        _u.readFIFO(actual, rx, rx_len);
+
+        if(actual && (rx[0] == 6U && rx[1] == 0x00)){
+            _data_flag = true;
+            auto state = _layer.receive_callback(EmulationLayerF::State::Communicated, rx, rx[0]);
+            if(state != EmulationLayerF::State::Communicated){
+                return goto_state(state);
+            }
+            return goto_selected();
+        }
+
     }
     return EmulationLayerF::State::Communicated;
 }
