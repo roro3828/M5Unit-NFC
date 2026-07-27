@@ -1030,5 +1030,12 @@ bool NFCLayerF::write(const uint16_t saddr, const uint8_t* tx, const uint16_t tx
     return _activePICC.checkFormat(format_ndef) && write(block_t(static_cast<uint8_t>(saddr & 0xFF)), tx, tx_len);
 }
 
+bool NFCLayerF::transceiveNFCF(uint8_t* rx, uint16_t& rx_len, const uint8_t* tx, const uint16_t tx_len, const uint32_t timeout_ms){
+    if(tx_len <= 1U || tx[0] != tx_len){
+        return false;
+    }
+    return _impl->transceive(rx, rx_len, tx + 1, tx_len - 1, timeout_ms);
+}
+
 }  // namespace nfc
 }  // namespace m5

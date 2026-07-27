@@ -751,6 +751,11 @@ bool make_personalized_card_key_lite_s(uint8_t card_key[16], const uint8_t maste
 
 ///@}
 
+namespace felica_standard {
+    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *area_keys[8], const uint8_t service_count, const uint8_t *service_keys[8],
+                        uint8_t group_service_key[8], uint8_t user_service_key[8]);
+}  // felica_standard
+
 }  // namespace f
 }  // namespace nfc
 }  // namespace m5

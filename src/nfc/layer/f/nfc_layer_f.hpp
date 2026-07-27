@@ -386,6 +386,8 @@ public:
     bool writeSupportNDEF(const bool enabled);
     ///@}
 
+    bool transceiveNFCF(uint8_t* rx, uint16_t& rx_len, const uint8_t* tx, const uint16_t tx_len, const uint32_t timeout_ms);
+
 protected:
     virtual bool read(uint8_t* rx, uint16_t& rx_len, const uint16_t saddr) override;
     virtual bool write(const uint16_t saddr, const uint8_t* tx, const uint16_t tx_len) override;

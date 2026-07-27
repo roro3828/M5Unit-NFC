@@ -67,7 +67,9 @@ namespace nfc {
 
 EmulationLayerF::~EmulationLayerF() = default;
 
-bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size)
+bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
+                            void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*),
+                            const bool auto_res, const bool listen_any)
 {
     if (_state != State::None) {
         M5_LIB_LOGW("Already started");
@@ -84,6 +86,7 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
     _picc        = picc;
     _memory      = ptr;
     _memory_size = size;
+    _callback    = callback;
 
     /*
     if (!_picc.valid() || !_memory || _memory_size < _picc.totalSize()) {
@@ -93,7 +96,7 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
     }
     */
 
-    _state = _impl->start_emulation(_picc) ? State::Off : State::None;
+    _state = _impl->start_emulation(_picc, auto_res, listen_any) ? State::Off : State::None;
     _prev  = State::None;
 
     _expired_at = m5::utility::millis() + _expired_ms;
@@ -156,6 +159,16 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 {
     if (!rx || rx_len < 2) {
         return State::Communicated;
+    }
+
+    if(_callback != nullptr){
+        static uint8_t tx[256];
+        static uint32_t tx_len;
+        _callback(rx, rx_len, tx, &tx_len);
+
+        tx_len--;
+
+        return _impl->transmit(tx + 1, tx_len, tx_len * 2) ? State::Selected : s;
     }
 
     State ret = s;

@@ -9,6 +9,7 @@
 */
 
 #include "nfcf.hpp"
+#include "nfc/crypto/des.hpp"
 #include <M5Utility.hpp>
 #include <algorithm>
 
@@ -317,8 +318,7 @@ bool PICC::valid() const
 
 bool PICC::validEmulation() const
 {
-    // Currently only Lite-S
-    return (type == Type::FeliCaLiteS) && valid() && emulation_sc == 0x88B4;
+    return valid();
 }
 
 std::string PICC::idmAsString() const
@@ -340,15 +340,14 @@ std::string PICC::typeAsString() const
 bool PICC::emulate(const Type t, const uint8_t idm[FELICA_ID_LENGTH], const uint8_t pmm[FELICA_ID_LENGTH],
                    const uint16_t sc /*Options for the future*/)
 {
-    (void)sc;
-    if (t != Type::FeliCaLiteS || !idm || !pmm) {
+    if (!idm || !pmm) {
         return false;
     }
 
     this->type = t;
     memcpy(this->idm, idm, sizeof(this->idm));
     memcpy(this->pmm, pmm, sizeof(this->pmm));
-    this->emulation_sc = 0x88B4;  // Base system code
+    this->emulation_sc = sc;
     this->format       = format_lite;
 
     return validEmulation();
@@ -358,6 +357,26 @@ bool operator==(const PICC& a, const PICC& b)
 {
     return a.valid() && b.valid() && memcmp(a.idm, b.idm, sizeof(a.idm)) == 0 &&
            memcmp(a.pmm, b.pmm, sizeof(a.pmm)) == 0 && a.type == b.type;
+}
+
+namespace felica_standard {
+    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *area_keys[8], const uint8_t service_count, const uint8_t *service_keys[8],
+                        uint8_t group_service_key[8], uint8_t user_service_key[8]){
+                            memcpy(group_service_key, system_key, 8);
+                            crypto::des_ctx_t ctx;
+
+                            for(uint8_t i = 0; i < area_count; i++){
+                                crypto::des_set_key(&ctx, area_keys[i]);
+                                crypto::des_encrypt(&ctx, group_service_key, group_service_key);
+                            }
+
+                            memcpy(user_service_key, group_service_key, 8);
+
+                            for(uint8_t i = 0; i < service_count; i++){
+                                crypto::des_set_key(&ctx, service_keys[i]);
+                                crypto::des_encrypt(&ctx, user_service_key, user_service_key);
+                            }
+                        }
 }
 
 }  // namespace f
