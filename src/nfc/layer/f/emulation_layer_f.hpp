@@ -21,6 +21,7 @@
 #include "nfc/crypto/des.hpp"
 #include <vector>
 #include <memory>
+#include <string.h>
 
 namespace m5 {
 
@@ -44,9 +45,22 @@ public:
     enum class State { None, Off, Communicated, Selected };
 
     struct Adapter;
-    struct DesKey;
     struct Service;
     struct Area;
+    struct DesKey {
+        uint8_t key[8];
+        uint16_t version = 0;
+
+        DesKey(): version(0){
+            memset(key, 0, 8);
+        }
+        DesKey(const uint8_t key[8], const uint16_t version): version(version){
+            memcpy(this->key, key, 8);
+        }
+        DesKey(const uint64_t key, const uint16_t version): version(version){
+            crypto::des::store64_be(key, this->key);
+        }
+    };
     
     //! @brief Construct with UnitST25R3916 (I2C)
     explicit EmulationLayerF(m5::unit::UnitST25R3916& u);
@@ -77,8 +91,11 @@ public:
 
     //! @brief Begin NFC-F emulation
     bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
-                const uint8_t idi[8] = nullptr,
-                const uint8_t pmi[8] = nullptr,
+                const uint8_t idi[8],
+                const uint8_t pmi[8],
+                const DesKey &system_key,
+                const std::vector<Area> &areas,
+                const std::vector<Service> &services,
                 void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr,
                 const bool auto_res = true, const bool listen_any = false);
     //! @brief End NFC-F emulation
@@ -113,10 +130,8 @@ protected:
     uint8_t* _memory{};
     uint32_t _memory_size{};
     std::vector<Area> _areas{};
-    uint16_t _area_count{0};
     std::vector<Service> _services{};
-    uint16_t _service_count{0};
-    uint8_t _system_key[8];
+    DesKey _system_key;
 
 private:
     State _state{}, _prev{};
@@ -154,20 +169,19 @@ struct EmulationLayerF::Adapter {
 };
 ///@endcond
 
-struct EmulationLayerF::DesKey {
-    uint8_t key[8];
-    uint16_t version;
-
-    DesKey(){
-        version = 0;
-    }
-};
-
 struct EmulationLayerF::Service {
-    uint16_t service_code = 0x0004;
+    uint16_t service_code = 0x0008;
     uint16_t block_count = 0;
     DesKey key;
     uint8_t* service_block = nullptr;
+
+    Service(const uint16_t service_code, const DesKey &key, const uint16_t block_count, uint8_t *block):
+        service_code(service_code),
+        key(key),
+        block_count(block_count) {
+            this->service_block = block;
+        }
+
     bool operator<(const Service &r) const{
         return this->service_code < r.service_code;
     }
@@ -190,6 +204,12 @@ struct EmulationLayerF::Area {
     uint16_t block_count = 0;
     DesKey key;
     uint16_t end_service_code = 0xFFFE;
+
+    Area(const uint16_t area_code, const uint16_t end_service_code, const DesKey &key):
+        area_code(area_code),
+        end_service_code(end_service_code),
+        key(key){}
+
     bool operator<(const Area &r) const{
         return this->area_code < r.area_code;
     }

@@ -77,6 +77,9 @@ EmulationLayerF::~EmulationLayerF() = default;
 bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
                             const uint8_t idi[8],
                             const uint8_t pmi[8],
+                            const DesKey &system_key,
+                            const std::vector<Area> &areas,
+                            const std::vector<Service> &services,
                             void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*),
                             const bool auto_res, const bool listen_any)
 {
@@ -104,19 +107,40 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
         memcpy(this->pmi, pmi, 8);
     }
 
-    for(uint8_t i = 0; i < 8; i++){
-        _system_key[i] = (i * 2) << 4 | (i * 2) + 1;
+    memcpy(this->_system_key.key, system_key.key, 8);
+    _system_key.version = system_key.version;
+
+    _areas = areas;
+    _services = services;
+
+    if(_areas.size() == 0){
+        return false;
+    }
+    if(_areas[0].area_code != 0x0000){
+        return false;
+    }
+    if(_areas[0].end_service_code != 0xFFFE){
+        return false;
     }
 
-    _area_count = 1;
-    _areas.resize(_area_count);
+    std::sort(_areas.begin(), _areas.end());
+    std::sort(_services.begin(), _services.end());
 
-    for(uint16_t i = 0; i < _area_count; i++){
-        _areas[i].area_code = (i & 0xff) << 4;
-        _areas[i].end_service_code = 0xFFFE;
-        _areas[i].block_count = 5;
-        memset(_areas[i].key.key, 0xaa, 8);
-        _areas[i].key.version = 3;
+    for(uint16_t i = 0; i < _areas.size(); i++){
+        if(!FeliCaStandard::is_area_code(_areas[i].area_code)){
+            return false;
+        }
+        if(0 < i && _areas[i - 1].area_code == _areas[i].area_code){
+            return false;
+        }
+    }
+    for(uint16_t i = 0; i < _services.size(); i++){
+        if(!FeliCaStandard::is_service_code(_services[i].service_code)){
+            return false;
+        }
+        if(0 < i && _services[i - 1].service_code == _services[i].service_code){
+            return false;
+        }
     }
 
     /*
@@ -256,7 +280,7 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
                 const uint16_t area_code = ((uint16_t)*(area_code_list + (i * 2))) | (((uint16_t)*(area_code_list + (i * 2) + 1)) << 8);
 
                 if(area_code == 0xffff){
-                    area_keys[i] = this->_system_key;
+                    area_keys[i] = this->_system_key.key;
                 }
                 else if(FeliCaStandard::is_area_code(area_code)){
                     const uint16_t index = find_area(area_code);
@@ -285,7 +309,7 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
                 const uint16_t service_code = ((uint16_t)*(service_code_list + (i * 2))) | (((uint16_t)*(service_code_list + (i * 2) + 1)) << 8);
 
                 if(service_code == 0xffff){
-                    service_keys[i] = this->_system_key;
+                    service_keys[i] = this->_system_key.key;
                 }
                 else if(FeliCaStandard::is_area_code(service_code)){
                     const uint16_t index = find_area(service_code);
@@ -317,7 +341,7 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
 
             uint8_t gsk[8];
             uint8_t usk[8];
-            FeliCaStandard::generate_groupkey(this->_system_key, area_code_count, area_keys, service_code_count, service_keys, gsk, usk);
+            FeliCaStandard::generate_groupkey(this->_system_key.key, area_code_count, area_keys, service_code_count, service_keys, gsk, usk);
 
             for(uint8_t i = 0; i < 8; i++){
                 gsk[i] ^= this->_picc.idm[i];
@@ -416,6 +440,271 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
             ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
             break;
         }
+
+        case CommandCode::RequestService: {
+            if(rx_len < 10 + 1 + 2){
+                break;
+            }
+
+            const uint8_t node_count = rx[10];
+            if((node_count < 1 || 32 < node_count) || rx_len != 10 + 1 + 2 * node_count){
+                break;
+            }
+
+            const uint8_t* node_code_list = rx + 11;
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8 + 1 + 2 * node_count);
+
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::RequestService);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+
+            tx[offset++] = node_count;
+            for(uint8_t i = 0; i < node_count; i++){
+                const uint16_t node_code = ((uint16_t)*(node_code_list + (i * 2))) | (((uint16_t)*(node_code_list + (i * 2) + 1)) << 8);
+                uint16_t key_version;
+
+                if(node_code == 0xffff){
+                    key_version = this->_system_key.version;
+                }
+                else if(FeliCaStandard::is_area_code(node_code)){
+                    const uint16_t index = find_area(node_code);
+                    if(index == 0xffff){
+                        key_version = 0xffff;
+                    }
+                    else{
+                        key_version = this->_areas[index].key.version;
+                    }
+                }
+                else if(FeliCaStandard::is_service_code(node_code)){
+                    const uint16_t index = find_service(node_code);
+                    if(index == 0xffff){
+                        key_version = 0xffff;
+                    }
+                    else{
+                        key_version = this->_services[index].key.version;
+                    }
+                }
+
+                tx[offset + i * 2] = key_version & 0xff;
+                tx[offset + i * 2 + 1] = (key_version >> 8) & 0xff;
+            }
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::RequestResponse: {
+            if(rx_len != 10){
+                break;
+            }
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8 + 1);
+
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::RequestResponse);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+            tx[offset++] = this->_mode;
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::SearchServiceCode: {
+            if(rx_len != 10 + 2){
+                break;
+            }
+
+            const uint16_t node_index = (((uint16_t)rx[11]) << 8) | rx[10];
+
+            uint16_t node_code;
+            uint16_t end_service_code = 0xffff;
+            if(node_index < this->_areas.size()){
+                node_code = this->_areas[node_index].area_code;
+                end_service_code = this->_areas[node_index].end_service_code;
+            }
+            else if(node_index < this->_areas.size() + this->_services.size()){
+                node_code = this->_services[node_index - this->_areas.size()].service_code;
+            }
+            else{
+                node_code = 0xffff;
+            }
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+
+            if(f::FeliCaStandard::is_area_code(node_code)){
+                tx.resize(1 + 8 + 4);
+            }
+            else{
+                tx.resize(1 + 8 + 2);
+            }
+
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::SearchServiceCode);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+            tx[offset++] = node_code & 0xff;
+            tx[offset++] = (node_code >> 8) & 0xff;
+            if(f::FeliCaStandard::is_area_code(node_code)){
+                tx[offset++] = end_service_code & 0xff;
+                tx[offset++] = (end_service_code >> 8) & 0xff;
+            }
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::RequestSystemCode: {
+            if(rx_len != 10){
+                break;
+            }
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8 + 1 + 2);
+
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::RequestSystemCode);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+            tx[offset++] = 1;
+            
+            tx[offset++] = (this->_picc.emulation_sc >> 8) & 0xff;
+            tx[offset++] = this->_picc.emulation_sc & 0xff;
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::ResetMode: {
+            if(rx_len != 12){
+                break;
+            }
+
+            this->_mode = 0x00;
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8 + 2);
+
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::ResetMode);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+            tx[offset++] = 0x00;
+            tx[offset++] = 0x00;
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::ReadWithoutEncryption: {
+            if(this->_mode != 0){
+                break;
+            }
+            if(rx_len < 10 + 1 + 2 + 1 + 2){
+                break;
+            }
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8);
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::ReadWithoutEncryption);
+            memcpy(tx.data() + offset, _picc.idm, 8);
+            offset += 8;
+
+            const uint8_t service_count = rx[10];
+            if(service_count < 1 || 16 < service_count){
+                tx.resize(1 + 8 + 2);
+                tx[offset++] = 0xff;
+                tx[offset++] = 0xa1;
+
+                ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+                break;
+            }
+            if(rx_len < 10 + 1 + (2 * service_count) + 1 + 2){
+                break;
+            }
+            const uint8_t* service_list = rx + 10 + 1;
+
+            const uint8_t block_count = rx[10 + 1 + (2 * service_count)];
+            if(block_count < 1 || 255 < (10 + 2 + 1 + (16 * block_count))){
+                tx.resize(1 + 8 + 2);
+                tx[offset++] = 0xff;
+                tx[offset++] = 0xa2;
+
+                ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+                break;
+            }
+            if(rx_len < 10 + 1 + (2 * service_count) + 1 + (2 * block_count)){
+                break;
+            }
+
+            uint8_t block_offset = 10 + 1 + (2 * service_count) + 1;
+            uint16_t error = 0x0000;
+
+            tx.resize(1 + 8 + 2 + 1 + (16 * block_count));
+
+            tx[offset++] = 0x00;
+            tx[offset++] = 0x00;
+            tx[offset++] = block_count;
+
+            for (uint8_t i = 0; i < block_count; i++) {
+                const block_t b = block_t::from(rx + block_offset);
+                block_offset += 2 + b.is_3byte();
+
+                if(b.access_mode() != 0b000){
+                    error = ((i + 1) << 8) | 0xA7;
+                    break;
+                }
+
+                const uint8_t order = b.order();
+                if(service_count <= order){
+                    error = ((i + 1) << 8) | 0xA3;
+                    break;
+                }
+
+                const uint16_t service_code = service_list[order * 2] | (((uint16_t)service_list[(order * 2) + 1]) << 8);
+                if(!f::FeliCaStandard::is_service_code(service_code)){
+                    error = ((i + 1) << 8) | 0xA4;
+                    break;
+                }
+                if(f::FeliCaStandard::is_auth_required(service_code)){
+                    error = ((i + 1) << 8) | 0xA5;
+                    break;
+                }
+
+                const uint16_t service_index = find_service(service_code);
+                if(service_index == 0xffff){
+                    error = ((i + 1) << 8) | 0xA6;
+                    break;
+                }
+                const auto service = this->_services[service_index];
+
+                if(service.block_count <= b.block()){
+                    error = ((i + 1) << 8) | 0xA8;
+                    break;
+                }
+
+                if(service.service_block == nullptr){
+                    memset(tx.data() + offset, 0x00, 16);
+                }
+                else {
+                    memcpy(tx.data() + offset, service.service_block + (b.block() * 16), 16);
+                }
+
+                offset += 16;
+            }
+
+            if(error != 0x0000){
+                tx.resize(1 + 8 + 2);
+                tx[9] = error >> 8;
+                tx[10] = error & 0xff;
+            }
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+
+        }
+        case CommandCode::WriteWithoutEncryption:
+            break;
     }
 
     return ret;
@@ -427,6 +716,133 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_secure(const S
     if(rx_len < 18 || (rx_len - 2) % 8 != 0){
         return s;
     }
+    if(!(this->_mode == 2 || this->_mode == 3)){
+        return s;
+    }
+    if(this->_auth_state.transaction_count == 0xffff){
+        return s;
+    }
+
+    std::vector<uint8_t> plain_rx(rx_len - 2);
+
+    crypto::des::des_ctx_t ctx;
+    crypto::des::des_set_key_uint64(&ctx, this->_auth_state.transaction_key);
+    crypto::des::des_cbc_decrypt(&ctx, rx + 2, plain_rx.data(), plain_rx.size());
+
+    const uint16_t transaction_count = plain_rx[0] | (((uint16_t)plain_rx[1]) << 8);
+    if(transaction_count <= this->_auth_state.transaction_count){
+        return s;
+    }
+    if(std::memcmp(plain_rx.data() + 2, this->_auth_state.transaction_id + 2, 6) != 0){
+        return s;
+    }
+
+    std::vector<uint8_t> calculated_mac(8);
+    f::FeliCaStandard::calculate_mac(rx[1], plain_rx.data(), plain_rx.size() - 8, calculated_mac.data());
+    if(std::memcmp(plain_rx.data() + plain_rx.size() - 8, calculated_mac.data(), 8) != 0){
+        return s;
+    }
+
+    std::vector<uint8_t> tx;
+    tx.resize(1 + 8 + 8);
+    uint16_t offset = 9;
+
+    switch (static_cast<CommandCode>(rx[1])) {
+        case CommandCode::Read: {
+            if(this->_mode != 2){
+                return s;
+            }
+            if(plain_rx.size() < 8 + 1 + 2){
+                return s;
+            }
+
+            tx[0] = m5::stl::to_underlying(ResponseCode::Read);
+
+            const uint8_t block_count = plain_rx[8];
+            if(block_count < 1 || 255 < (10 + 2 + 1 + (16 * block_count) + 8 + 5)){
+                tx.resize(1 + 8 + 2 + 8 + 6);
+                tx[offset++] = 0xff;
+                tx[offset++] = 0xa2;
+                break;
+            }
+            if(plain_rx.size() < 8 + 1 + (2 * block_count)){
+                return s;
+            }
+            uint8_t block_offset = 8 + 1;
+            uint16_t error = 0x0000;
+
+            tx[offset++] = 0x00;
+            tx[offset++] = 0x00;
+
+            tx.resize(1 + 8 + 2 + 1 + (16 * block_count) + 8 + 5);
+            tx[offset++] = block_count;
+
+            for (uint8_t i = 0; i < block_count; i++) {
+                const block_t b = block_t::from(plain_rx.data() + block_offset);
+                block_offset += 2 + b.is_3byte();
+
+                if(b.access_mode() != 0b000){
+                    error = ((i + 1) << 8) | 0xA7;
+                    break;
+                }
+
+                const uint8_t order = b.order();
+                if(_auth_state.service_count <= order){
+                    error = ((i + 1) << 8) | 0xA3;
+                    break;
+                }
+
+                const uint16_t service_code = _auth_state.services[order];
+                if(!f::FeliCaStandard::is_service_code(service_code)){
+                    error = ((i + 1) << 8) | 0xA4;
+                    break;
+                }
+
+                const uint16_t service_index = find_service(service_code);
+                if(service_index == 0xffff){
+                    error = ((i + 1) << 8) | 0xA6;
+                    break;
+                }
+                const auto service = this->_services[service_index];
+
+                if(service.block_count <= b.block()){
+                    error = ((i + 1) << 8) | 0xA8;
+                    break;
+                }
+
+                if(service.service_block == nullptr){
+                    memset(tx.data() + offset, 0x00, 16);
+                }
+                else {
+                    memcpy(tx.data() + offset, service.service_block + (b.block() * 16), 16);
+                }
+
+                offset += 16;
+            }
+
+            if(error != 0x0000){
+                tx.resize(1 + 8 + 2 + 8 + 6);
+                tx[9] = error >> 8;
+                tx[10] = error & 0xff;
+            }
+            break;
+        }
+
+        default:
+            return s;
+    }
+
+    
+    this->_auth_state.transaction_count = transaction_count + 1;
+    tx[1] = (this->_auth_state.transaction_count) & 0xff;
+    tx[2] = (this->_auth_state.transaction_count >> 8) & 0xff;
+    memcpy(tx.data() + 3, this->_auth_state.transaction_id + 2, 6);
+
+    f::FeliCaStandard::calculate_mac(tx[0], tx.data() + 1, tx.size() - 1 - 8, tx.data() + tx.size() - 8);
+
+    crypto::des::des_cbc_encrypt(&ctx, tx.data() + 1, tx.data() + 1, tx.size() - 1);
+
+    return _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
 }
 
 EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const uint8_t* rx, const uint32_t rx_len)
@@ -566,6 +982,7 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
         }
     }
     else if(this->_picc.type == f::Type::FeliCaStandard) {
+
         switch (static_cast<CommandCode>(rx[1])) {
             case CommandCode::Polling:
                 if (rx_len == 6 && is_system_code_match(rx + 2, this->_picc.emulation_sc)) {
