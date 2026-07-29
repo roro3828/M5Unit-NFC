@@ -7,6 +7,7 @@
 namespace m5 {
 namespace nfc {
 namespace crypto {
+namespace des {
   #define LB32_MASK   0x00000001u
   #define LB64_MASK   0x0000000000000001ull
   #define U28_MASK    0x0fffffffu
@@ -124,20 +125,6 @@ namespace crypto {
     0x01, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01
   };
 
-  static inline uint64_t load64_be(const uint8_t b[DES_BLOCK_SIZE]) {
-    return ((uint64_t)b[0] << 56) | ((uint64_t)b[1] << 48) |
-          ((uint64_t)b[2] << 40) | ((uint64_t)b[3] << 32) |
-          ((uint64_t)b[4] << 24) | ((uint64_t)b[5] << 16) |
-          ((uint64_t)b[6] <<  8) | ((uint64_t)b[7] <<  0);
-  }
-
-  static inline void store64_be(uint64_t v, uint8_t b[DES_BLOCK_SIZE]) {
-    b[0] = (uint8_t)(v >> 56); b[1] = (uint8_t)(v >> 48);
-    b[2] = (uint8_t)(v >> 40); b[3] = (uint8_t)(v >> 32);
-    b[4] = (uint8_t)(v >> 24); b[5] = (uint8_t)(v >> 16);
-    b[6] = (uint8_t)(v >>  8); b[7] = (uint8_t)(v >>  0);
-  }
-
   static inline uint32_t rotl28(uint32_t x, uint8_t s) {
     return ((x << s) | (x >> (28 - s))) & U28_MASK;
   }
@@ -182,7 +169,7 @@ namespace crypto {
     return f;
   }
 
-  void des_set_key_block64(des_ctx_t *ctx, uint64_t key64) {
+  void des_set_key_uint64(des_ctx_t *ctx, uint64_t key64) {
     uint64_t pc1 = permute64(key64, PC1, 56, 64);
     uint32_t C = (uint32_t)((pc1 >> 28) & U28_MASK);
     uint32_t D = (uint32_t)(pc1 & U28_MASK);
@@ -196,10 +183,10 @@ namespace crypto {
   }
   void des_set_key(des_ctx_t *ctx, const uint8_t key[DES_BLOCK_SIZE]) {
     uint64_t v = load64_be(key);
-    des_set_key_block64(ctx, v);
+    des_set_key_uint64(ctx, v);
   }
 
-  uint64_t des_encrypt_block64(const des_ctx_t *ctx, uint64_t in64) {
+  uint64_t des_encrypt_uint64(const des_ctx_t *ctx, uint64_t in64) {
     uint64_t ip = des_ip(in64);
     uint32_t L = (uint32_t)(ip >> 32);
     uint32_t R = (uint32_t)ip;
@@ -214,7 +201,7 @@ namespace crypto {
     return des_pi(pre);
   }
 
-  uint64_t des_decrypt_block64(const des_ctx_t *ctx, uint64_t in64) {
+  uint64_t des_decrypt_uint64(const des_ctx_t *ctx, uint64_t in64) {
     uint64_t ip = des_ip(in64);
     uint32_t L = (uint32_t)(ip >> 32);
     uint32_t R = (uint32_t)ip;
@@ -231,13 +218,13 @@ namespace crypto {
 
   void des_encrypt(const des_ctx_t *ctx, const uint8_t in[DES_BLOCK_SIZE], uint8_t out[DES_BLOCK_SIZE]) {
     uint64_t v = load64_be(in);
-    v = des_encrypt_block64(ctx, v);
+    v = des_encrypt_uint64(ctx, v);
     store64_be(v, out);
   }
 
   void des_decrypt(const des_ctx_t *ctx, const uint8_t in[DES_BLOCK_SIZE], uint8_t out[DES_BLOCK_SIZE]) {
     uint64_t v = load64_be(in);
-    v = des_decrypt_block64(ctx, v);
+    v = des_decrypt_uint64(ctx, v);
     store64_be(v, out);
   }
 
@@ -278,23 +265,23 @@ namespace crypto {
     }
   }
 
-  uint64_t tdes_encrypt_block64(const des_ctx_t *key1,
+  uint64_t tdes_encrypt_uint64(const des_ctx_t *key1,
                                 const des_ctx_t *key2,
                                 const des_ctx_t *key3,
                                 uint64_t in64) {
-    uint64_t x = des_encrypt_block64(key1, in64);
-    x = des_decrypt_block64(key2, x);
-    x = des_encrypt_block64(key3, x);
+    uint64_t x = des_encrypt_uint64(key1, in64);
+    x = des_decrypt_uint64(key2, x);
+    x = des_encrypt_uint64(key3, x);
     return x;
   }
 
-  uint64_t tdes_decrypt_block64(const des_ctx_t *key1,
+  uint64_t tdes_decrypt_uint64(const des_ctx_t *key1,
                                 const des_ctx_t *key2,
                                 const des_ctx_t *key3,
                                 uint64_t in64) {
-      uint64_t x = des_decrypt_block64(key1, in64);
-      x = des_encrypt_block64(key2, x);
-      x = des_decrypt_block64(key3, x);
+      uint64_t x = des_decrypt_uint64(key1, in64);
+      x = des_encrypt_uint64(key2, x);
+      x = des_decrypt_uint64(key3, x);
       return x;
   }
 
@@ -303,7 +290,7 @@ namespace crypto {
                           const des_ctx_t *key3,
                           const uint8_t in[DES_BLOCK_SIZE], uint8_t out[DES_BLOCK_SIZE]) {
     uint64_t v = load64_be(in);
-    v = tdes_encrypt_block64(key1, key2, key3, v);
+    v = tdes_encrypt_uint64(key1, key2, key3, v);
     store64_be(v, out);
   }
   void tdes_decrypt_block(const des_ctx_t *key1,
@@ -311,10 +298,11 @@ namespace crypto {
                           const des_ctx_t *key3,
                           const uint8_t in[DES_BLOCK_SIZE], uint8_t out[DES_BLOCK_SIZE]) {
     uint64_t v = load64_be(in);
-    v = tdes_decrypt_block64(key1, key2, key3, v);
+    v = tdes_decrypt_uint64(key1, key2, key3, v);
     store64_be(v, out);
   }
 
+}  // namespace des
 }  // namespace crypto
 }  // namespace nfc
 }  // namespace m5

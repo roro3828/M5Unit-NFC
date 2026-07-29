@@ -359,24 +359,56 @@ bool operator==(const PICC& a, const PICC& b)
            memcmp(a.pmm, b.pmm, sizeof(a.pmm)) == 0 && a.type == b.type;
 }
 
-namespace felica_standard {
-    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *area_keys[8], const uint8_t service_count, const uint8_t *service_keys[8],
+namespace FeliCaStandard {
+    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *const*area_keys, const uint8_t service_count, const uint8_t *const*service_keys,
                         uint8_t group_service_key[8], uint8_t user_service_key[8]){
-                            memcpy(group_service_key, system_key, 8);
-                            crypto::des_ctx_t ctx;
 
-                            for(uint8_t i = 0; i < area_count; i++){
-                                crypto::des_set_key(&ctx, area_keys[i]);
-                                crypto::des_encrypt(&ctx, group_service_key, group_service_key);
-                            }
+            crypto::des::des_ctx_t ctx;
+            uint64_t group_key = crypto::des::load64_be(system_key);
 
-                            memcpy(user_service_key, group_service_key, 8);
+            for(uint8_t i = 0; i < area_count; i++){
+                if(area_keys[i] == nullptr){
+                    continue;
+                }
+                crypto::des::des_set_key(&ctx, area_keys[i]);
+                group_key = crypto::des::des_encrypt_uint64(&ctx, group_key);
+            }
+            crypto::des::store64_be(group_key, group_service_key);
 
-                            for(uint8_t i = 0; i < service_count; i++){
-                                crypto::des_set_key(&ctx, service_keys[i]);
-                                crypto::des_encrypt(&ctx, user_service_key, user_service_key);
-                            }
-                        }
+            for(uint8_t i = 0; i < service_count; i++){
+                if(service_keys[i] == nullptr){
+                    continue;
+                }
+                crypto::des::des_set_key(&ctx, service_keys[i]);
+                group_key = crypto::des::des_encrypt_uint64(&ctx, group_key);
+            }
+            crypto::des::store64_be(group_key, user_service_key);
+    }
+
+    void calculate_mac(const uint8_t cmd, const uint8_t* data, const uint8_t length, uint8_t mac[8]) {
+        if(length % 8 != 0){
+            return;
+        }
+        uint64_t _mac = ((uint64_t)(length + 8) << 56) | ((uint64_t)cmd << 48);
+        crypto::des::des_ctx_t ctx;
+
+        for(uint8_t i = 0; i < length; i += 8){
+            crypto::des::des_set_key(&ctx, data + i);
+            _mac = crypto::des::des_encrypt_uint64(&ctx, _mac);
+        }
+
+        crypto::des::store64_be(_mac, mac);
+    }
+
+    bool is_area_code(const uint16_t node_code){
+        return (node_code & 0b111110) == 0;
+    }
+    bool is_service_code(const uint16_t node_code){
+        return !is_area_code(node_code) && (node_code != 0xffff);
+    }
+    bool is_auth_required(const uint16_t node_code){
+        return (is_area_code(node_code) || (node_code == 0xffff)) || (node_code & 0b1) == 0b0;
+    }
 }
 
 }  // namespace f

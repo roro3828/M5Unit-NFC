@@ -63,12 +63,23 @@ constexpr Format format_felica_plug{0x0040};  //!< FeliCa Plug
   @brief NFC-F Command code
  */
 enum class CommandCode : uint8_t {
-    Polling,
+    Polling                = 0x00,
     RequestService         = 0x02,
     RequestResponse        = 0x04,
     ReadWithoutEncryption  = 0x06,
     WriteWithoutEncryption = 0x08,
+    SearchServiceCode      = 0x0A,
     RequestSystemCode      = 0x0C,
+    Authentication1        = 0x10,
+    Authentication2        = 0x12,
+    Read                   = 0x14,
+    Write                  = 0x16,
+    RequestServicev2       = 0x32,
+    ResetMode              = 0x3E,
+    Authentication1v2      = 0x40,
+    Authentication2v2      = 0x42,
+    Readv2                 = 0x44,
+    Writev2                = 0x46,
 };
 
 /*!
@@ -81,7 +92,18 @@ enum class ResponseCode : uint8_t {
     RequestResponse        = 0x05,
     ReadWithoutEncryption  = 0x07,
     WriteWithoutEncryption = 0x09,
+    SearchServiceCode      = 0x0B,
     RequestSystemCode      = 0x0D,
+    Authentication1        = 0x11,
+    Authentication2        = 0x13,
+    Read                   = 0x15,
+    Write                  = 0x17,
+    RequestServicev2       = 0x33,
+    ResetMode              = 0x3F,
+    Authentication1v2      = 0x41,
+    Authentication2v2      = 0x43,
+    Readv2                 = 0x45,
+    Writev2                = 0x47,
 };
 
 ///@name SystemCode
@@ -751,10 +773,22 @@ bool make_personalized_card_key_lite_s(uint8_t card_key[16], const uint8_t maste
 
 ///@}
 
-namespace felica_standard {
-    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *area_keys[8], const uint8_t service_count, const uint8_t *service_keys[8],
+namespace FeliCaStandard {
+    void generate_groupkey(const uint8_t system_key[8], const uint8_t area_count, const uint8_t *const*area_keys, const uint8_t service_count, const uint8_t *const*service_keys,
                         uint8_t group_service_key[8], uint8_t user_service_key[8]);
-}  // felica_standard
+
+    /**
+     * @param cmd command code
+     * @param data
+     * @param length data length exclude mac. It must be a multiple of 8.
+     */
+    void calculate_mac(const uint8_t cmd, const uint8_t* data, const uint8_t length, uint8_t mac[8]);
+
+    bool is_area_code(const uint16_t node_code);
+    bool is_service_code(const uint16_t node_code);
+    bool is_auth_required(const uint16_t node_code);
+
+}  // FeliCaStandard
 
 }  // namespace f
 }  // namespace nfc

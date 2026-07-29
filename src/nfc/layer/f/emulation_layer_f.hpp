@@ -18,6 +18,7 @@
 #define M5_UNIT_NFC_NFC_LAYER_F_EMULATION_LAYER_F_HPP
 
 #include "nfc/f/nfcf.hpp"
+#include "nfc/crypto/des.hpp"
 #include <vector>
 #include <memory>
 
@@ -43,6 +44,10 @@ public:
     enum class State { None, Off, Communicated, Selected };
 
     struct Adapter;
+    struct DesKey;
+    struct Service;
+    struct Area;
+    
     //! @brief Construct with UnitST25R3916 (I2C)
     explicit EmulationLayerF(m5::unit::UnitST25R3916& u);
     //! @brief Construct with CapST25R3916 (SPI)
@@ -80,6 +85,11 @@ public:
     void update();
 
     virtual State receive_callback(const State s, const uint8_t* rx, const uint32_t rx_len);
+    virtual State receive_standard_callback_plain(const State s, const uint8_t* rx, const uint32_t rx_len);
+    virtual State receive_standard_callback_secure(const State s, const uint8_t* rx, const uint32_t rx_len);
+
+    virtual uint16_t find_area(const uint16_t area_code);
+    virtual uint16_t find_service(const uint16_t service_code);
 
 protected:
     void update_expired();
@@ -92,6 +102,11 @@ private:
 protected:
     uint8_t* _memory{};
     uint32_t _memory_size{};
+    std::vector<Area> _areas{};
+    uint16_t _area_count{0};
+    std::vector<Service> _services{};
+    uint16_t _service_count{0};
+    uint8_t _system_key[8];
 
 private:
     State _state{}, _prev{};
@@ -99,6 +114,18 @@ private:
     unsigned int _expired_at{};
     std::unique_ptr<Adapter> _impl;
     m5::nfc::f::PICC _picc{};
+    uint8_t _mode{0};
+    struct {
+        uint16_t transaction_count{0};
+        uint8_t transaction_id[8];
+        uint64_t transaction_key;
+        uint8_t service_count{0};
+        uint16_t services[16];
+
+        uint64_t key_l;
+        uint64_t key_alpha;
+        uint64_t key_beta;
+    } _auth_state;
 
     void (*_callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*);
 };
@@ -117,6 +144,59 @@ struct EmulationLayerF::Adapter {
     virtual EmulationLayerF::State update_selected()     = 0;
 };
 ///@endcond
+
+struct EmulationLayerF::DesKey {
+    uint8_t key[8];
+    uint16_t version;
+
+    DesKey(){
+        version = 0;
+    }
+};
+
+struct EmulationLayerF::Service {
+    uint16_t service_code = 0x0004;
+    uint16_t block_count = 0;
+    DesKey key;
+    uint8_t* service_block = nullptr;
+    bool operator<(const Service &r) const{
+        return this->service_code < r.service_code;
+    }
+    bool operator<(const uint16_t r) const{
+        return this->service_code < r;
+    }
+    bool operator==(const uint16_t r) const{
+        return this->service_code == r;
+    }
+    friend bool operator<(const Service &l, const Service &r){
+        return l.service_code < r.service_code;
+    }
+    friend bool operator<(const uint16_t &l, const Service &r){
+        return l < r.service_code;
+    }
+};
+
+struct EmulationLayerF::Area {
+    uint16_t area_code = 0x0000;
+    uint16_t block_count = 0;
+    DesKey key;
+    uint16_t end_service_code = 0xFFFE;
+    bool operator<(const Area &r) const{
+        return this->area_code < r.area_code;
+    }
+    bool operator<(const uint16_t r) const{
+        return this->area_code < r;
+    }
+    bool operator==(const uint16_t r) const{
+        return this->area_code == r;
+    }
+    friend bool operator<(const Area &l, const Area &r){
+        return l.area_code < r.area_code;
+    }
+    friend bool operator<(const uint16_t l, const Area &r){
+        return l < r.area_code;
+    }
+};
 
 }  // namespace nfc
 }  // namespace m5
