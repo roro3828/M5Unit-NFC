@@ -77,6 +77,8 @@ public:
 
     //! @brief Begin NFC-F emulation
     bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
+                const uint8_t idi[8] = nullptr,
+                const uint8_t pmi[8] = nullptr,
                 void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr,
                 const bool auto_res = true, const bool listen_any = false);
     //! @brief End NFC-F emulation
@@ -90,6 +92,14 @@ public:
 
     virtual uint16_t find_area(const uint16_t area_code);
     virtual uint16_t find_service(const uint16_t service_code);
+
+    union {
+        uint8_t m[16]{};
+        struct {
+            uint8_t idi[f::FELICA_ID_LENGTH];
+            uint8_t pmi[f::FELICA_ID_LENGTH];
+        };
+    };
 
 protected:
     void update_expired();
@@ -124,7 +134,6 @@ private:
 
         uint64_t key_l;
         uint64_t key_alpha;
-        uint64_t key_beta;
     } _auth_state;
 
     void (*_callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*);

@@ -389,7 +389,7 @@ namespace FeliCaStandard {
         if(length % 8 != 0){
             return;
         }
-        uint64_t _mac = ((uint64_t)(length + 8) << 56) | ((uint64_t)cmd << 48);
+        uint64_t _mac = ((uint64_t)(length + 10) << 56) | ((uint64_t)cmd << 48);
         crypto::des::des_ctx_t ctx;
 
         for(uint8_t i = 0; i < length; i += 8){

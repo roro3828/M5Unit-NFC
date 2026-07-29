@@ -10,6 +10,7 @@
 #include "emulation_layer_f.hpp"
 #include "nfc/a/nfca.hpp"
 #include <M5Utility.hpp>
+#include <M5Unified.h>
 
 using namespace m5::nfc;
 using namespace m5::nfc::f;
@@ -74,6 +75,8 @@ namespace nfc {
 EmulationLayerF::~EmulationLayerF() = default;
 
 bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
+                            const uint8_t idi[8],
+                            const uint8_t pmi[8],
                             void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*),
                             const bool auto_res, const bool listen_any)
 {
@@ -93,6 +96,13 @@ bool EmulationLayerF::begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const ui
     _memory      = ptr;
     _memory_size = size;
     _callback    = callback;
+
+    if(idi != nullptr){
+        memcpy(this->idi, idi, 8);
+    }
+    if(pmi != nullptr){
+        memcpy(this->pmi, pmi, 8);
+    }
 
     for(uint8_t i = 0; i < 8; i++){
         _system_key[i] = (i * 2) << 4 | (i * 2) + 1;
@@ -269,12 +279,10 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
                 }
             }
 
-            this->_auth_state.service_count = service_code_count;
 
             uint8_t* service_keys[16];
             for(uint8_t i = 0; i < service_code_count; i++){
                 const uint16_t service_code = ((uint16_t)*(service_code_list + (i * 2))) | (((uint16_t)*(service_code_list + (i * 2) + 1)) << 8);
-                this->_auth_state.services[i] = service_code;
 
                 if(service_code == 0xffff){
                     service_keys[i] = this->_system_key;
@@ -300,6 +308,13 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
                 }
             }
 
+            this->_mode = 1;
+            
+            for(uint8_t i = 0; i < service_code_count; i++){
+                this->_auth_state.services[i] = ((uint16_t)*(service_code_list + (i * 2))) | (((uint16_t)*(service_code_list + (i * 2) + 1)) << 8);
+            }
+            this->_auth_state.service_count = service_code_count;
+
             uint8_t gsk[8];
             uint8_t usk[8];
             FeliCaStandard::generate_groupkey(this->_system_key, area_code_count, area_keys, service_code_count, service_keys, gsk, usk);
@@ -317,13 +332,13 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
             crypto::des::des_set_key_uint64(&ctx_alpha, this->_auth_state.key_alpha);
 
             crypto::des::des_encrypt(&ctx_alpha, gsk, gsk);
-            this->_auth_state.key_beta = crypto::des::load64_be(gsk);
             crypto::des::des_ctx_t ctx_beta;
-            crypto::des::des_set_key_uint64(&ctx_beta, this->_auth_state.key_beta);
+            crypto::des::des_set_key_uint64(&ctx_beta, crypto::des::load64_be(gsk));
 
-            this->_auth_state.transaction_count = 0;
-            // TODO: random
-            this->_auth_state.transaction_key = 0;
+            // generate transaction key
+            const auto high = esp_random();
+            const auto low  = esp_random();
+            this->_auth_state.transaction_key = ((uint64_t)high << 32) | low;
 
             uint64_t transaction_id = crypto::des::load64_be(rx + offset);
             transaction_id = crypto::des::tdes_decrypt_uint64(&ctx_alpha, &ctx_l, &ctx_alpha, transaction_id);
@@ -335,7 +350,7 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
 
             offset = 0;
             std::vector<uint8_t> tx{};
-            tx.resize(1 + 1 + 8 + 8 + 8);
+            tx.resize(1 + 8 + 8 + 8);
             tx[offset++] = m5::stl::to_underlying(ResponseCode::Authentication1);
             memcpy(tx.data() + offset, _picc.idm, 8);
             offset += 8;
@@ -346,7 +361,60 @@ EmulationLayerF::State EmulationLayerF::receive_standard_callback_plain(const St
             offset += 8;
 
             ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
+        }
+        case CommandCode::Authentication2: {
+            if(this->_mode != 1){
+                break;
+            }
 
+            if(rx_len < 10 + 8){
+                break;
+            }
+
+            uint64_t transaction_key = crypto::des::load64_be(rx + 10);
+
+            crypto::des::des_ctx_t ctx_l;
+            crypto::des::des_set_key_uint64(&ctx_l, this->_auth_state.key_l);
+
+            crypto::des::des_ctx_t ctx;
+            crypto::des::des_set_key_uint64(&ctx, this->_auth_state.key_alpha);
+
+            transaction_key = crypto::des::tdes_decrypt_uint64(&ctx, &ctx_l, &ctx, transaction_key);
+            if(transaction_key != this->_auth_state.transaction_key){
+                break;
+            }
+
+            crypto::des::des_set_key_uint64(&ctx, this->_auth_state.transaction_key);
+
+            uint16_t offset = 0;
+            std::vector<uint8_t> tx{};
+            tx.resize(1 + 8 + 8 + 8 + 8);
+            tx[offset++] = m5::stl::to_underlying(ResponseCode::Authentication2);
+            
+            this->_auth_state.transaction_count = 0;
+
+            tx[offset++] = this->_auth_state.transaction_count & 0xff;
+            tx[offset++] = (this->_auth_state.transaction_count >> 8) & 0xff;
+            memcpy(tx.data() + offset, this->_auth_state.transaction_id + 2, 6);
+            offset += 6;
+
+            memcpy(tx.data() + offset, this->idi, 8);
+            offset += 8;
+
+            memcpy(tx.data() + offset, this->pmi, 8);
+            offset += 8;
+
+            FeliCaStandard::calculate_mac(tx[0], tx.data() + 1, 8 + 8 + 8, tx.data() + offset);
+            offset += 8;
+
+            crypto::des::des_set_key_uint64(&ctx, this->_auth_state.transaction_key);
+            crypto::des::des_cbc_encrypt(&ctx, tx.data() + 1, tx.data() + 1, 8 + 8 + 8 + 8);
+
+            this->_mode = 2;
+
+            ret = _impl->transmit(tx.data(), tx.size(), tx.size() * 2) ? State::Selected : s;
+            break;
         }
     }
 
