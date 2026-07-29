@@ -13,6 +13,14 @@
 #include <M5Utility.h>
 #include <wiring/m5_unit_unified_wiring.hpp>
 #include <vector>
+#include <SPI.h>
+#include <SD.h>
+
+// ========== CoreS3 SD Card Correct Pin Definitions ==========
+#define SD_SPI_CS_PIN    4
+#define SD_SPI_SCK_PIN  36
+#define SD_SPI_MISO_PIN 35
+#define SD_SPI_MOSI_PIN 37
 
 // *************************************************************
 // Choose one define symbol to match the unit you are using
@@ -266,6 +274,28 @@ void setup()
 {
     M5.begin();
     M5.setTouchButtonHeightByRatio(100);
+
+    // load sd
+
+  // ========== SD Card Initialization (Using Correct Pins) ==========
+    SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
+
+    if (!SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) {
+        M5.Display.println("SD card not detected");
+        while (1);
+    } else {
+        M5.Display.println("SD card detected");
+    }
+    delay(1000);
+    auto file = SD.open("/RelayPayment.ino", FILE_READ);
+    if (file) {
+        const auto str = file.readString();
+        M5.Display.printf("%s\n", str.substring(0, 200).c_str());
+    } else {
+        M5.Display.println("Failed to create TXT file");
+    }
+    delay(1000);
+
 
     // Emulation settings
     auto cfg      = unit.config();
