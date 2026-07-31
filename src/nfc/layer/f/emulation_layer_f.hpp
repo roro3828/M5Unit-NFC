@@ -22,6 +22,7 @@
 #include <vector>
 #include <memory>
 #include <string.h>
+#include <SD.h>
 
 namespace m5 {
 
@@ -61,14 +62,14 @@ public:
             crypto::des::store64_be(key, this->key);
         }
     };
+    struct SDStorage;
 
     class Emulator {
         public:
 
         Emulator(
             const m5::nfc::f::PICC& picc,
-            uint8_t* ptr,
-            const uint32_t size,
+            SDStorage &storage,
             const uint8_t idi[8],
             const uint8_t pmi[8],
             const DesKey &system_key,
@@ -99,8 +100,7 @@ public:
         };
         
         protected:
-        uint8_t* _memory{};
-        uint32_t _memory_size{};
+        std::reference_wrapper<SDStorage> _storage;
         std::vector<Area> _areas{};
         std::vector<Service> _services{};
         DesKey _system_key;
@@ -228,17 +228,47 @@ struct EmulationLayerF::Adapter {
 };
 ///@endcond
 
+struct EmulationLayerF::SDStorage {
+    SDStorage(){
+        _is_open = false;
+    }
+
+    bool begin(fs::SDFS& sd, const std::string& filename){
+        if(_initialized){
+            return true;
+        }
+        _initialized = true;
+
+        this->_sd = &sd;
+        this->_filename = filename;
+
+        return true;
+    }
+    bool open(const bool writeable = false);
+    bool close();
+
+    uint16_t read(const uint16_t index, uint8_t* buf, const uint16_t size = 1);
+    uint16_t write(const uint16_t index, const uint8_t* buf, const uint16_t size = 1);
+
+    private:
+    fs::SDFS* _sd = nullptr;
+    std::string _filename = "";
+    fs::File _fp;
+    bool _is_open;
+    bool _initialized{false};
+};
+
 struct EmulationLayerF::Service {
     uint16_t service_code = 0x0008;
     uint16_t block_count = 0;
     DesKey key;
-    uint8_t* service_block = nullptr;
+    uint16_t block_index = 0;
 
-    Service(const uint16_t service_code, const DesKey &key, const uint16_t block_count, uint8_t *block):
+    Service(const uint16_t service_code, const DesKey &key, const uint16_t block_count, const uint16_t block_index):
         service_code(service_code),
         key(key),
-        block_count(block_count) {
-            this->service_block = block;
+        block_count(block_count),
+        block_index(block_index){
         }
 
     bool operator<(const Service &r) const{

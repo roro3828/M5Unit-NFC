@@ -11,13 +11,10 @@
 #include "nfc/a/nfca.hpp"
 #include <M5Utility.hpp>
 #include <M5Unified.h>
+#include <SD.h>
 
 using namespace m5::nfc;
 using namespace m5::nfc::f;
-
-// clang-format off
-#pragma GCC optimize("O3")
-// clang-format on
 
 namespace {
 
@@ -76,17 +73,14 @@ EmulationLayerF::~EmulationLayerF() = default;
 
 EmulationLayerF::Emulator::Emulator(
             const m5::nfc::f::PICC& picc,
-            uint8_t* ptr,
-            const uint32_t size,
+            EmulationLayerF::SDStorage& storage,
             const uint8_t idi[8],
             const uint8_t pmi[8],
             const DesKey &system_key,
             const std::vector<Area> &areas,
-            const std::vector<Service> &services){
+            const std::vector<Service> &services): _storage(storage){
 
     this->_picc = picc;
-    this->_memory = ptr;
-    this->_memory_size = size;
 
     if(idi != nullptr){
         memcpy(this->idi, idi, 8);
@@ -166,6 +160,7 @@ bool EmulationLayerF::begin(const std::vector<Emulator> &emulators,
     if(emulators.empty()){
         return false;
     }
+    
     _emulators = emulators;
 
     for(uint8_t i = 1; i < emulators.size(); i++){
@@ -662,15 +657,19 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             tx[offset++] = 0x00;
             tx[offset++] = block_count;
 
+            _storage.get().open();
+
             for (uint8_t i = 0; i < block_count; i++) {
                 if(rx_len <= block_offset){
                     tx.resize(0);
+                    _storage.get().close();
                     return true;
                 }
 
                 const uint8_t remaining_size = rx_len - block_offset;
                 if(remaining_size < (((rx[block_offset] & 0x80) == 0)? 1 : 0) + 2){
                     tx.resize(0);
+                    _storage.get().close();
                     return true;
                 }
                 const block_t b = block_t::from(rx + block_offset);
@@ -709,12 +708,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
                     break;
                 }
 
-                if(service.service_block == nullptr){
-                    memset(tx.data() + offset, 0x00, 16);
-                }
-                else {
-                    memcpy(tx.data() + offset, service.service_block + (b.block() * 16), 16);
-                }
+                _storage.get().read(service.block_index + b.block(), tx.data() + offset);
 
                 offset += 16;
             }
@@ -724,6 +718,8 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
                 tx[9] = error >> 8;
                 tx[10] = error & 0xff;
             }
+
+            _storage.get().close();
 
             return true;
 
@@ -815,15 +811,19 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
             tx.resize(1 + 8 + 2 + 1 + (16 * block_count));
             tx[offset++] = block_count;
 
+            _storage.get().open();
+
             for (uint8_t i = 0; i < block_count; i++) {
                 if(plain_rx.size() <= block_offset){
                     tx.resize(0);
+                    _storage.get().close();
                     return true;
                 }
 
                 const uint8_t remaining_size = plain_rx.size() - block_offset;
                 if(remaining_size < (((plain_rx[block_offset] & 0x80) == 0)? 1 : 0) + 2){
                     tx.resize(0);
+                    _storage.get().close();
                     return true;
                 }
                 const block_t b = block_t::from(plain_rx.data() + block_offset);
@@ -858,12 +858,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
                     break;
                 }
 
-                if(service.service_block == nullptr){
-                    memset(tx.data() + offset, 0x00, 16);
-                }
-                else {
-                    memcpy(tx.data() + offset, service.service_block + (b.block() * 16), 16);
-                }
+                _storage.get().read(service.block_index + b.block(), tx.data() + offset);
 
                 offset += 16;
             }
@@ -874,6 +869,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
                 tx[10] = error & 0xff;
             }
 
+            _storage.get().close();
             break;
         }
 
@@ -911,82 +907,7 @@ bool EmulationLayerF::Emulator::receive_emulator_callback(const uint8_t* rx, con
         if(memcmp(_picc.idm, rx + 2, sizeof(_picc.idm)) != 0){
             return false;
         }
-
-        switch (static_cast<CommandCode>(rx[1])) {
-            case CommandCode::ReadWithoutEncryption:
-                // M5_LIB_LOGE("RD:");
-                // m5::utility::log::dump(rx, rx_len, false);
-                if (rx_len >= 15) {
-                    uint16_t sc = rx[11] | (uint16_t)rx[12];
-
-                    tx.resize(1 + 1 + 8 + 2 + 1 + 16 * rx[13]);
-
-                    uint32_t offset{};
-                    tx[offset++] = m5::stl::to_underlying(ResponseCode::ReadWithoutEncryption);  // Response code
-                    memcpy(tx.data() + 1, _picc.idm, 8);                                         // IDm
-                    offset += 8;
-                    tx[offset++]          = 0;  // Status 1
-                    tx[offset++]          = 0;  // Status 2
-                    tx[offset++]          = 0;  // Number of blocks
-                    uint32_t block_offset = 14;
-                    bool error{};
-                    for (uint_fast8_t i = 0; i < rx[13]; ++i) {
-                        block_t b = block_t::from(rx + block_offset);
-                        block_offset += 2 + b.is_3byte();
-                        auto ptr = can_read_lite_s(b) ? block_to_address(_memory, _memory_size, b.block()) : null_data;
-                        if (!ptr || !(sc == service_random_read || sc == service_random_read_write)) {
-                            tx[9]  = 1U << i;  // Error block bit
-                            tx[10] = 0xA8;     // Invalid block
-                            tx.resize(1 + 8 + 2 + 1);
-                            error = true;
-                            break;
-                        }
-                        memcpy(tx.data() + offset, ptr, 16);
-                        offset += 16;
-                    }
-                    if (!error) {
-                        tx[11] = rx[13];
-                    }
-                }
-                break;
-
-            case CommandCode::WriteWithoutEncryption:
-                // M5_LIB_LOGE("WT:%u", rx_len);
-                if (rx_len >= 32 && rx[10] == 1) {
-                    uint16_t sc = rx[11] | (uint16_t)rx[12];
-
-                    tx.resize(1 + 8 + 2);
-                    tx[0] = m5::stl::to_underlying(ResponseCode::WriteWithoutEncryption);
-
-                    memcpy(tx.data() + 1, _picc.idm, 8);
-
-                    // TODO check permission, REG register, RC
-
-                    uint32_t block_offset = 14;
-                    for (uint_fast8_t i = 0; i < rx[13]; ++i) {
-                        block_t b = block_t::from(rx + block_offset);
-                        block_offset += 2 + b.is_3byte();
-                        auto ptr = block_to_address(_memory, _memory_size, b.block());
-                        if (!ptr || sc != service_random_read_write || rx[13] > 2 || is_read_only_lite_s(b)) {
-                            tx[9]  = 1U << i;
-                            tx[10] = 0xA8;
-                            break;
-                        }
-                        if (b != lite_s::ID) {
-                            memcpy(ptr, rx + rx_len - rx[13] * 16 + i * 16, 16);
-                        } else {
-                            // ID can write lower 8 bytes
-                            memcpy(ptr + 8, rx + rx_len - rx[13] * 16 + i * 16 + 8, 8);
-                        }
-                    }
-                    // m5::utility::log::dump(res, sizeof(res), false);
-                }
-                break;
-
-            default:
-                M5_LIB_LOGE(" CMD:%02X %u", rx[1], rx_len);
-                break;
-        }
+        return true;
     }
     else if(this->_picc.type == f::Type::FeliCaStandard) {
 
@@ -1138,6 +1059,80 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 
     // M5_LIB_LOGE(" --> %u", ret);
     return ret;
+}
+
+bool EmulationLayerF::SDStorage::open(const bool writeable){
+    if(!_initialized){
+        return false;
+    }
+    if(_is_open){
+        return true;
+    }
+
+    if(_sd == nullptr){
+        return false;
+    }
+
+    if(writeable){
+        _fp = (*_sd).open(_filename.c_str(), FILE_WRITE);
+    }
+    else{
+        _fp = (*_sd).open(_filename.c_str(), FILE_READ);
+    }
+
+    if(_fp){
+        _is_open = true;
+        return true;
+    }
+    else{
+        return false;
+    }
+}
+
+bool EmulationLayerF::SDStorage::close(){
+    if(!_initialized){
+        return false;
+    }
+    if(!_is_open){
+        return true;
+    }
+
+    _fp.flush();
+    _fp.close();
+    _is_open = false;
+
+    return true;
+}
+
+uint16_t EmulationLayerF::SDStorage::read(const uint16_t index, uint8_t* buf, const uint16_t size){
+    if(!_initialized){
+        return false;
+    }
+    if(!_is_open){
+        return 0;
+    }
+    if(!_fp.seek(index * 16)){
+        return 0;
+    }
+    const size_t readed = _fp.read(buf, size * 16);
+
+    return readed >> 4;
+}
+
+uint16_t EmulationLayerF::SDStorage::write(const uint16_t index, const uint8_t* buf, const uint16_t size){
+    if(!_initialized){
+        return false;
+    }
+    if(!_is_open){
+        return 0;
+    }
+
+    if(!_fp.seek(index * 16)){
+        return 0;
+    }
+    const size_t written = _fp.write(buf, size * 16);
+
+    return written >> 4;
 }
 
 }  // namespace nfc
