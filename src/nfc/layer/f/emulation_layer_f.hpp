@@ -39,9 +39,9 @@ namespace nfc {
 class EmulationLayerF {
 public:
     /*!
-      @enum State
-      @brief Emulation state for NFC-F
-     */
+    @enum State
+    @brief Emulation state for NFC-F
+    */
     enum class State { None, Off, Communicated, Selected };
 
     struct Adapter;
@@ -61,6 +61,93 @@ public:
             crypto::des::store64_be(key, this->key);
         }
     };
+
+    class Emulator {
+        public:
+
+        Emulator(
+            const m5::nfc::f::PICC& picc,
+            uint8_t* ptr,
+            const uint32_t size,
+            const uint8_t idi[8],
+            const uint8_t pmi[8],
+            const DesKey &system_key,
+            const std::vector<Area> &areas,
+            const std::vector<Service> &services
+        );
+
+        bool begin();
+
+
+        //! @brief Gets the emulated PICC information
+        inline const m5::nfc::f::PICC& emulatePICC() const
+        {
+            return _picc;
+        }
+
+        bool receive_emulator_callback(const uint8_t* rx, const uint32_t rx_len, std::vector<uint8_t> &tx);
+
+        uint16_t find_area(const uint16_t area_code);
+        uint16_t find_service(const uint16_t service_code);
+
+        union {
+            uint8_t m[16]{};
+            struct {
+                uint8_t idi[f::FELICA_ID_LENGTH];
+                uint8_t pmi[f::FELICA_ID_LENGTH];
+            };
+        };
+        
+        protected:
+        uint8_t* _memory{};
+        uint32_t _memory_size{};
+        std::vector<Area> _areas{};
+        std::vector<Service> _services{};
+        DesKey _system_key;
+
+        private:
+        /**
+         * @brief Standard plain data reception callback.
+         * 
+         * @param rx     Pointer to the received data buffer.
+         * @param rx_len Byte length of the received data.
+         * @param tx     Buffer to store the transmission/response data.
+         * 
+         * @retval true  If the received data is addressed to this device (even if data parsing fails).
+         * @retval false If the received data is not addressed to this device, or if the destination is unknown.
+         */
+        bool receive_standard_callback_plain(const uint8_t* rx, const uint32_t rx_len, std::vector<uint8_t> &tx);
+        /**
+         * @brief Standard encrypted data reception callback.
+         * 
+         * @param rx     Pointer to the received data buffer. This data starts from length.
+         * @param rx_len Byte length of the received data.
+         * @param tx     Buffer to store the encrypted transmission/response data. This data starts from command code.
+         * 
+         * @retval true  If the received data is addressed to this device (even if data parsing fails).
+         * @retval false If the received data is not addressed to this device, or if the destination is unknown.
+         */
+        bool receive_standard_callback_secure(const uint8_t* rx, const uint32_t rx_len, std::vector<uint8_t> &tx);
+        uint32_t _expired_ms{60 * 1000u};
+        unsigned int _expired_at{};
+        m5::nfc::f::PICC _picc{};
+        uint8_t _mode;
+
+        bool _initialized{false};
+
+        struct {
+            uint16_t transaction_count{0};
+            uint8_t transaction_id[8];
+            uint64_t transaction_key;
+            uint8_t service_count{0};
+            uint16_t services[16];
+
+            uint64_t key_l;
+            uint64_t key_alpha;
+        } _auth_state;
+    };
+
+
     
     //! @brief Construct with UnitST25R3916 (I2C)
     explicit EmulationLayerF(m5::unit::UnitST25R3916& u);
@@ -73,11 +160,6 @@ public:
     {
         return _state;
     }
-    //! @brief Gets the emulated PICC information
-    inline const m5::nfc::f::PICC& emulatePICC() const
-    {
-        return _picc;
-    }
     //! @brief Gets the expiration time (ms)
     inline uint32_t expiredTime() const
     {
@@ -88,14 +170,19 @@ public:
     {
         _expired_ms = ms;
     }
+    //! @brief Emulators
+    inline const std::vector<m5::nfc::EmulationLayerF::Emulator>& emulators()
+    {
+        return _emulators;
+    }
 
     //! @brief Begin NFC-F emulation
-    bool begin(const m5::nfc::f::PICC& picc, uint8_t* ptr, const uint32_t size,
-                const uint8_t idi[8],
-                const uint8_t pmi[8],
-                const DesKey &system_key,
-                const std::vector<Area> &areas,
-                const std::vector<Service> &services,
+    bool begin(const Emulator &emulator,
+                void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr,
+                const bool auto_res = true, const bool listen_any = false);
+
+    //! @brief Begin NFC-F emulation
+    bool begin(const std::vector<Emulator> &emulators,
                 void (*callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*) = nullptr,
                 const bool auto_res = true, const bool listen_any = false);
     //! @brief End NFC-F emulation
@@ -104,52 +191,22 @@ public:
     void update();
 
     virtual State receive_callback(const State s, const uint8_t* rx, const uint32_t rx_len);
-    virtual State receive_standard_callback_plain(const State s, const uint8_t* rx, const uint32_t rx_len);
-    virtual State receive_standard_callback_secure(const State s, const uint8_t* rx, const uint32_t rx_len);
-
-    virtual uint16_t find_area(const uint16_t area_code);
-    virtual uint16_t find_service(const uint16_t service_code);
-
-    union {
-        uint8_t m[16]{};
-        struct {
-            uint8_t idi[f::FELICA_ID_LENGTH];
-            uint8_t pmi[f::FELICA_ID_LENGTH];
-        };
-    };
 
 protected:
     void update_expired();
+    std::vector<Emulator> _emulators;
+    State _state{}, _prev{};
 
 private:
     void update_off();
     void update_communicated();
     void update_selected();
 
-protected:
-    uint8_t* _memory{};
-    uint32_t _memory_size{};
-    std::vector<Area> _areas{};
-    std::vector<Service> _services{};
-    DesKey _system_key;
-
-private:
-    State _state{}, _prev{};
     uint32_t _expired_ms{60 * 1000u};
     unsigned int _expired_at{};
     std::unique_ptr<Adapter> _impl;
-    m5::nfc::f::PICC _picc{};
-    uint8_t _mode{0};
-    struct {
-        uint16_t transaction_count{0};
-        uint8_t transaction_id[8];
-        uint64_t transaction_key;
-        uint8_t service_count{0};
-        uint16_t services[16];
 
-        uint64_t key_l;
-        uint64_t key_alpha;
-    } _auth_state;
+    uint8_t _current_system_index = -1;
 
     void (*_callback)(const uint8_t*, const uint32_t, uint8_t*, uint32_t*);
 };
