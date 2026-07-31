@@ -213,6 +213,8 @@ void EmulationLayerF::update()
             break;
         case State::Off:
             //            if (_state != _prev) M5_LIB_LOGE("==OFF");
+            _current_system_index = (_current_system_index + 1) % _emulators.size();
+            _impl->set_sens_res(_emulators[_current_system_index].emulatePICC());
             update_off();
             break;
         case State::Communicated:

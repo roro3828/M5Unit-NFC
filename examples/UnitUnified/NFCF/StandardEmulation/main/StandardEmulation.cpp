@@ -320,7 +320,7 @@ void setup()
             areas,
             services
         )};
-        if (emu_f.begin(emulators, nullptr, true, false)) {
+        if (emu_f.begin(emulators)) {
             lcd.fillScreen(TFT_DARKGREEN);
             lcd.setCursor(0, 16);
             const auto& e_picc = emu_f.emulators()[0].emulatePICC();

@@ -223,6 +223,8 @@ struct EmulationLayerF::Adapter {
     virtual EmulationLayerF::State update_off()          = 0;
     virtual EmulationLayerF::State update_communicated() = 0;
     virtual EmulationLayerF::State update_selected()     = 0;
+
+    virtual bool set_sens_res(const m5::nfc::f::PICC& picc) = 0;
 };
 ///@endcond
 
