@@ -23,41 +23,6 @@ constexpr uint32_t wcnt_offset     = rc_offset + 16u * 9;
 constexpr uint32_t crc_ceck_offset = wcnt_offset + 16u * 3;
 constexpr uint8_t null_data[16]{};
 
-uint8_t* block_to_address(uint8_t* mem, const uint32_t mem_size, const uint16_t block)
-{
-    if (!mem || !mem_size) {
-        return nullptr;
-    }
-
-    uint32_t offset{mem_size};
-
-    if (block <= lite_s::REG.number) {  // 0x00 - 0x0D
-        offset = 16 * block;
-    } else if (block <= lite_s::MC.number) {  // 0x80 - 0x88
-        offset = rc_offset + 16 * (block - lite_s::RC.number);
-    } else if (block <= lite_s::STATE.number) {  // 0x90 - 0x92
-        offset = wcnt_offset + 16 * (block - lite_s::WCNT.number);
-    } else if (block == lite_s::CRC_CHECK.number) {
-        offset = crc_ceck_offset;
-    }
-    return (offset + 16 <= mem_size) ? (mem + offset) : nullptr;
-}
-
-inline bool is_system_code_ndef(const uint8_t sc[2])
-{
-    return sc && sc[0] == 0x12 && sc[1] == 0xFC;
-}
-
-inline bool is_system_code_lite(const uint8_t sc[2])
-{
-    return sc && sc[0] == 0x88 && sc[1] == 0xB4;
-}
-
-inline bool is_system_code_wildcard(const uint8_t sc[2])
-{
-    return sc && sc[0] == 0xFF && sc[1] == 0xFF;
-}
-
 inline bool is_system_code_match(const uint8_t poll_sc[2], const uint16_t sc){
     const bool msb_match = (poll_sc[0] == 0xff) || (poll_sc[0] == ((sc >> 8) & 0xff));
     const bool lsb_match = (poll_sc[1] == 0xff) || (poll_sc[1] == (sc & 0xff));
@@ -72,26 +37,60 @@ namespace nfc {
 EmulationLayerF::~EmulationLayerF() = default;
 
 EmulationLayerF::Emulator::Emulator(
-            const m5::nfc::f::PICC& picc,
-            EmulationLayerF::SDStorage& storage,
-            const uint8_t idi[8],
-            const uint8_t pmi[8],
-            const DesKey &system_key,
-            const std::vector<Area> &areas,
-            const std::vector<Service> &services): _storage(storage){
+            uint8_t* memory,
+            const size_t size
+        ): _memory(memory), _memory_size(size){
 
-    this->_picc = picc;
+    uint16_t system_index = 0;
 
-    if(idi != nullptr){
-        memcpy(this->idi, idi, 8);
-    }
-    if(pmi != nullptr){
-        memcpy(this->pmi, pmi, 8);
+    if(get_system_address(_memory, size, 0, system_index) == 0xffff){
+        return;
     }
 
-    this->_system_key = system_key;
-    _areas = areas;
-    _services = services;
+    uint16_t index = system_index;
+
+    while(index < (size >> 4)){
+        uint16_t next = index;
+        const uint16_t area_address = get_area_address(_memory, size, index, next);
+
+        if(area_address == 0xffff){
+            break;
+        }
+
+        this->_areas.push_back(Area(_memory + (area_address << 4)));
+
+        index = next;
+    }
+
+    index = system_index;
+
+    while(index < (size >> 4)){
+        uint16_t next = index;
+        const uint16_t service_address = get_service_address(_memory, size, index, next);
+
+        if(service_address == 0xffff){
+            break;
+        }
+
+        this->_services.push_back(Service(_memory + (service_address << 4)));
+
+        index = next;
+    }
+
+    index = system_index;
+
+    while(index < (size >> 4)){
+        uint16_t next = index;
+        const uint16_t serviceBlock_address = get_serviceblock_address(_memory, size, index, next);
+
+        if(serviceBlock_address == 0xffff){
+            break;
+        }
+
+        this->_service_blocks.push_back(ServiceBlock(_memory + (serviceBlock_address << 4)));
+
+        index = next;
+    }
 }
 bool EmulationLayerF::Emulator::begin(){
     if(_initialized){
@@ -101,10 +100,10 @@ bool EmulationLayerF::Emulator::begin(){
     if(_areas.size() == 0){
         return false;
     }
-    if(_areas[0].area_code != 0x0000){
+    if(_areas[0].area_code() != 0x0000){
         return false;
     }
-    if(_areas[0].end_service_code != 0xFFFE){
+    if(_areas[0].end_service_code() != 0xFFFE){
         return false;
     }
 
@@ -112,20 +111,24 @@ bool EmulationLayerF::Emulator::begin(){
     
     std::sort(_areas.begin(), _areas.end());
     std::sort(_services.begin(), _services.end());
+    std::sort(_service_blocks.begin(), _service_blocks.end());
 
     for(uint16_t i = 0; i < _areas.size(); i++){
-        if(!FeliCaStandard::is_area_code(_areas[i].area_code)){
+        if(!FeliCaStandard::is_area_code(_areas[i].area_code())){
             return false;
         }
-        if(0 < i && _areas[i - 1].area_code == _areas[i].area_code){
+        if(0 < i && _areas[i - 1].area_code() == _areas[i].area_code()){
             return false;
         }
     }
     for(uint16_t i = 0; i < _services.size(); i++){
-        if(!FeliCaStandard::is_service_code(_services[i].service_code)){
+        if(!FeliCaStandard::is_service_code(_services[i].service_code())){
             return false;
         }
-        if(0 < i && _services[i - 1].service_code == _services[i].service_code){
+        if(0 < i && _services[i - 1].service_code() == _services[i].service_code()){
+            return false;
+        }
+        if(find_service_block(_services[i].service_number()) == _service_blocks.end()){
             return false;
         }
     }
@@ -165,7 +168,7 @@ bool EmulationLayerF::begin(const std::vector<Emulator> &emulators,
 
     for(uint8_t i = 1; i < emulators.size(); i++){
         for(uint8_t j = 0; j < i; j++){
-            if(std::memcmp(_emulators[j].emulatePICC().idm, emulators[i].emulatePICC().idm, 8) == 0){
+            if(std::memcmp(_emulators[j].idm(), emulators[i].idm(), 8) == 0){
                 return false;
             }
         }
@@ -180,7 +183,11 @@ bool EmulationLayerF::begin(const std::vector<Emulator> &emulators,
     _callback    = callback;
     _current_system_index = 0;
 
-    _state = _impl->start_emulation(emulators[_current_system_index].emulatePICC(), auto_res, listen_any) ? State::Off : State::None;
+    _state = _impl->start_emulation(
+        _emulators[_current_system_index].system_code(),
+        _emulators[_current_system_index].idm(),
+        _pmm,
+        auto_res, listen_any) ? State::Off : State::None;
     _prev  = State::None;
 
     _expired_at = m5::utility::millis() + _expired_ms;
@@ -209,7 +216,11 @@ void EmulationLayerF::update()
         case State::Off:
             //            if (_state != _prev) M5_LIB_LOGE("==OFF");
             _current_system_index = (_current_system_index + 1) % _emulators.size();
-            _impl->set_sens_res(_emulators[_current_system_index].emulatePICC());
+            _impl->set_sens_res(
+                _emulators[_current_system_index].system_code(),
+                _emulators[_current_system_index].idm(),
+                _pmm
+            );
             update_off();
             break;
         case State::Communicated:
@@ -241,29 +252,26 @@ void EmulationLayerF::update_selected()
     _state = _impl->update_selected();
 }
 
-uint16_t EmulationLayerF::Emulator::find_area(const uint16_t area_code){
+std::vector<EmulationLayerF::Area>::iterator EmulationLayerF::Emulator::find_area(const uint16_t area_code){
     if(!f::FeliCaStandard::is_area_code(area_code)){
-        return 0xffff;
+        return _areas.end();
     }
 
-    const auto it = std::find(this->_areas.begin(), this->_areas.end(), area_code);
-    if(it == this->_areas.end()){
-        return 0xffff;
-    }
-
-    return std::distance(this->_areas.begin(), it);
+    return std::find(this->_areas.begin(), this->_areas.end(), area_code);
 }
-uint16_t EmulationLayerF::Emulator::find_service(const uint16_t service_code){
+std::vector<EmulationLayerF::Service>::iterator EmulationLayerF::Emulator::find_service(const uint16_t service_code){
     if(!f::FeliCaStandard::is_service_code(service_code)){
-        return 0xffff;
+        return _services.end();
     }
 
-    const auto it = std::find(this->_services.begin(), this->_services.end(), service_code);
-    if(it == this->_services.end()){
-        return 0xffff;
+    return std::find(this->_services.begin(), this->_services.end(), service_code);
+}
+std::vector<EmulationLayerF::ServiceBlock>::iterator EmulationLayerF::Emulator::find_service_block(const uint16_t service_number){
+    if(0x03FF < service_number){
+        return _service_blocks.end();
     }
 
-    return std::distance(this->_services.begin(), it);
+    return std::find(this->_service_blocks.begin(), this->_service_blocks.end(), service_number);
 }
 
 bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* rx, const uint32_t rx_len, std::vector<uint8_t> &tx){
@@ -272,7 +280,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
     }
 
     // Check if the destination IDm matches this device's IDm
-    if(memcmp(_picc.idm, rx + 2, sizeof(_picc.idm)) != 0){
+    if(memcmp(idm(), rx + 2, 8) != 0){
         return false;
     }
     // ========================================================
@@ -313,27 +321,27 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             const uint8_t* service_code_list = rx + offset;
             offset += (2 * service_code_count);
 
-            uint8_t* area_keys[16];
+            const uint8_t* area_keys[16];
             for(uint8_t i = 0; i < area_code_count; i++){
                 const uint16_t area_code = ((uint16_t)*(area_code_list + (i * 2))) | (((uint16_t)*(area_code_list + (i * 2) + 1)) << 8);
 
                 if(area_code == 0xffff){
-                    area_keys[i] = this->_system_key.key;
+                    area_keys[i] = des_key().key();
                 }
                 else if(FeliCaStandard::is_area_code(area_code)){
-                    const uint16_t index = find_area(area_code);
-                    if(index == 0xffff){
+                    const auto it = find_area(area_code);
+                    if(it == _areas.end()){
                         return true;
                     }
-                    area_keys[i] = this->_areas[index].key.key;
+                    area_keys[i] = (*it).des_key().key();
                 }
                 else if(FeliCaStandard::is_service_code(area_code)){
                     if(FeliCaStandard::is_auth_required(area_code)){
-                        const uint16_t index = find_service(area_code);
-                        if(index == 0xffff){
+                        const auto it = find_service(area_code);
+                        if(it == _services.end()){
                             return true;
                         }
-                        area_keys[i] = this->_services[index].key.key;
+                        area_keys[i] = (*it).des_key().key();
                     }
                     else{
                         area_keys[i] = nullptr;
@@ -344,27 +352,27 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
                 }
             }
 
-            uint8_t* service_keys[16];
+            const uint8_t* service_keys[16];
             for(uint8_t i = 0; i < service_code_count; i++){
                 const uint16_t service_code = ((uint16_t)*(service_code_list + (i * 2))) | (((uint16_t)*(service_code_list + (i * 2) + 1)) << 8);
 
                 if(service_code == 0xffff){
-                    service_keys[i] = this->_system_key.key;
+                    service_keys[i] = des_key().key();
                 }
                 else if(FeliCaStandard::is_area_code(service_code)){
-                    const uint16_t index = find_area(service_code);
-                    if(index == 0xffff){
+                    const auto it = find_area(service_code);
+                    if(it == _areas.end()){
                         return true;
                     }
-                    service_keys[i] = this->_areas[index].key.key;
+                    service_keys[i] = (*it).des_key().key();
                 }
                 else if(FeliCaStandard::is_service_code(service_code)){
                     if(FeliCaStandard::is_auth_required(service_code)){
-                        const uint16_t index = find_service(service_code);
-                        if(index == 0xffff){
+                        const auto it = find_service(service_code);
+                        if(it == _services.end()){
                             return true;
                         }
-                        service_keys[i] = this->_services[index].key.key;
+                        service_keys[i] = (*it).des_key().key();
                     }
                     else{
                         service_keys[i] = nullptr;
@@ -384,10 +392,10 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
 
             uint8_t gsk[8];
             uint8_t usk[8];
-            FeliCaStandard::generate_groupkey(this->_system_key.key, area_code_count, area_keys, service_code_count, service_keys, gsk, usk);
+            FeliCaStandard::generate_groupkey(des_key().key(), area_code_count, area_keys, service_code_count, service_keys, gsk, usk);
 
             for(uint8_t i = 0; i < 8; i++){
-                gsk[i] ^= this->_picc.idm[i];
+                gsk[i] ^= idm()[i];
             }
             this->_auth_state.key_l = crypto::des::load64_be(gsk);
             crypto::des::des_ctx_t ctx_l;
@@ -418,7 +426,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             offset = 0;
             tx.resize(1 + 8 + 8 + 8);
             tx[offset++] = m5::stl::to_underlying(ResponseCode::Authentication1);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
 
             crypto::des::store64_be(transaction_id, tx.data() + offset);
@@ -463,10 +471,10 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             memcpy(tx.data() + offset, this->_auth_state.transaction_id + 2, 6);
             offset += 6;
 
-            memcpy(tx.data() + offset, this->idi, 8);
+            memcpy(tx.data() + offset, idi(), 8);
             offset += 8;
 
-            memcpy(tx.data() + offset, this->pmi, 8);
+            memcpy(tx.data() + offset, pmi(), 8);
             offset += 8;
 
             FeliCaStandard::calculate_mac(tx[0], tx.data() + 1, 8 + 8 + 8, tx.data() + offset);
@@ -496,33 +504,27 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             tx.resize(1 + 8 + 1 + 2 * node_count);
 
             tx[offset++] = m5::stl::to_underlying(ResponseCode::RequestService);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
 
             tx[offset++] = node_count;
             for(uint8_t i = 0; i < node_count; i++){
                 const uint16_t node_code = ((uint16_t)*(node_code_list + (i * 2))) | (((uint16_t)*(node_code_list + (i * 2) + 1)) << 8);
-                uint16_t key_version;
+                uint16_t key_version = 0xffff;
 
                 if(node_code == 0xffff){
-                    key_version = this->_system_key.version;
+                    key_version = des_key().version();
                 }
                 else if(FeliCaStandard::is_area_code(node_code)){
-                    const uint16_t index = find_area(node_code);
-                    if(index == 0xffff){
-                        key_version = 0xffff;
-                    }
-                    else{
-                        key_version = this->_areas[index].key.version;
+                    const auto it = find_area(node_code);
+                    if(it < _areas.end()){
+                        key_version = (*it).des_key().version();
                     }
                 }
                 else if(FeliCaStandard::is_service_code(node_code)){
-                    const uint16_t index = find_service(node_code);
-                    if(index == 0xffff){
-                        key_version = 0xffff;
-                    }
-                    else{
-                        key_version = this->_services[index].key.version;
+                    const auto it = find_service(node_code);
+                    if(it < _services.end()){
+                        key_version = (*it).des_key().version();
                     }
                 }
 
@@ -541,7 +543,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             tx.resize(1 + 8 + 1);
 
             tx[offset++] = m5::stl::to_underlying(ResponseCode::RequestResponse);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
             tx[offset++] = this->_mode;
 
@@ -557,11 +559,11 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             uint16_t node_code;
             uint16_t end_service_code = 0xffff;
             if(node_index < this->_areas.size()){
-                node_code = this->_areas[node_index].area_code;
-                end_service_code = this->_areas[node_index].end_service_code;
+                node_code = this->_areas[node_index].area_code();
+                end_service_code = this->_areas[node_index].end_service_code();
             }
             else if(node_index < this->_areas.size() + this->_services.size()){
-                node_code = this->_services[node_index - this->_areas.size()].service_code;
+                node_code = this->_services[node_index - this->_areas.size()].service_code();
             }
             else{
                 node_code = 0xffff;
@@ -577,7 +579,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             }
 
             tx[offset++] = m5::stl::to_underlying(ResponseCode::SearchServiceCode);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
 
             tx[offset++] = node_code & 0xff;
@@ -601,7 +603,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             tx.resize(1 + 8 + 2);
 
             tx[offset++] = m5::stl::to_underlying(ResponseCode::ResetMode);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
             tx[offset++] = 0x00;
             tx[offset++] = 0x00;
@@ -619,7 +621,7 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             uint16_t offset = 0;
             tx.resize(1 + 8);
             tx[offset++] = m5::stl::to_underlying(ResponseCode::ReadWithoutEncryption);
-            memcpy(tx.data() + offset, _picc.idm, 8);
+            memcpy(tx.data() + offset, idm(), 8);
             offset += 8;
 
             const uint8_t service_count = rx[10];
@@ -657,19 +659,15 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
             tx[offset++] = 0x00;
             tx[offset++] = block_count;
 
-            _storage.get().open();
-
             for (uint8_t i = 0; i < block_count; i++) {
                 if(rx_len <= block_offset){
                     tx.resize(0);
-                    _storage.get().close();
                     return true;
                 }
 
                 const uint8_t remaining_size = rx_len - block_offset;
                 if(remaining_size < (((rx[block_offset] & 0x80) == 0)? 1 : 0) + 2){
                     tx.resize(0);
-                    _storage.get().close();
                     return true;
                 }
                 const block_t b = block_t::from(rx + block_offset);
@@ -696,19 +694,18 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
                     break;
                 }
 
-                const uint16_t service_index = find_service(service_code);
-                if(service_index == 0xffff){
+                const auto service = find_service(service_code);
+                if(service == _services.end()){
                     error = ((i + 1) << 8) | 0xA6;
                     break;
                 }
-                const auto service = this->_services[service_index];
+                const auto service_block = find_service_block((*service).service_number());
 
-                if(service.block_count <= b.block()){
+                if(!(*service_block).read(b.block(), tx.data() + offset,
+                    ((*service).service_code() & 0b001100) == 0b001100)){
                     error = ((i + 1) << 8) | 0xA8;
                     break;
                 }
-
-                _storage.get().read(service.block_index + b.block(), tx.data() + offset);
 
                 offset += 16;
             }
@@ -718,8 +715,6 @@ bool EmulationLayerF::Emulator::receive_standard_callback_plain(const uint8_t* r
                 tx[9] = error >> 8;
                 tx[10] = error & 0xff;
             }
-
-            _storage.get().close();
 
             return true;
 
@@ -811,19 +806,15 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
             tx.resize(1 + 8 + 2 + 1 + (16 * block_count));
             tx[offset++] = block_count;
 
-            _storage.get().open();
-
             for (uint8_t i = 0; i < block_count; i++) {
                 if(plain_rx.size() <= block_offset){
                     tx.resize(0);
-                    _storage.get().close();
                     return true;
                 }
 
                 const uint8_t remaining_size = plain_rx.size() - block_offset;
                 if(remaining_size < (((plain_rx[block_offset] & 0x80) == 0)? 1 : 0) + 2){
                     tx.resize(0);
-                    _storage.get().close();
                     return true;
                 }
                 const block_t b = block_t::from(plain_rx.data() + block_offset);
@@ -846,19 +837,18 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
                     break;
                 }
 
-                const uint16_t service_index = find_service(service_code);
-                if(service_index == 0xffff){
+                const auto service = find_service(service_code);
+                if(service == _services.end()){
                     error = ((i + 1) << 8) | 0xA6;
                     break;
                 }
-                const auto service = this->_services[service_index];
+                const auto service_block = find_service_block((*service).service_number());
 
-                if(service.block_count <= b.block()){
+                if(!(*service_block).read(b.block(), tx.data() + offset,
+                    ((*service).service_code() & 0b001100) == 0b001100)){
                     error = ((i + 1) << 8) | 0xA8;
                     break;
                 }
-
-                _storage.get().read(service.block_index + b.block(), tx.data() + offset);
 
                 offset += 16;
             }
@@ -869,7 +859,6 @@ bool EmulationLayerF::Emulator::receive_standard_callback_secure(const uint8_t* 
                 tx[10] = error & 0xff;
             }
 
-            _storage.get().close();
             break;
         }
 
@@ -903,34 +892,25 @@ bool EmulationLayerF::Emulator::receive_emulator_callback(const uint8_t* rx, con
     }
     tx.resize(0);
 
-    if(this->_picc.type == f::Type::FeliCaLiteS) {
-        if(memcmp(_picc.idm, rx + 2, sizeof(_picc.idm)) != 0){
+    switch (static_cast<CommandCode>(rx[1])) {
+        case CommandCode::RequestService:
+        case CommandCode::RequestResponse:
+        case CommandCode::ReadWithoutEncryption:
+        case CommandCode::WriteWithoutEncryption:
+        case CommandCode::SearchServiceCode:
+        case CommandCode::Authentication1:
+        case CommandCode::Authentication2:
+        case CommandCode::RequestServicev2:
+        case CommandCode::ResetMode:
+            return receive_standard_callback_plain(rx, rx_len, tx);
+        
+        case CommandCode::Read:
+        case CommandCode::Write:
+            return receive_standard_callback_secure(rx, rx_len, tx);
+
+        default:
+            M5_LIB_LOGE(" CMD:%02X %u", rx[1], rx_len);
             return false;
-        }
-        return true;
-    }
-    else if(this->_picc.type == f::Type::FeliCaStandard) {
-
-        switch (static_cast<CommandCode>(rx[1])) {
-            case CommandCode::RequestService:
-            case CommandCode::RequestResponse:
-            case CommandCode::ReadWithoutEncryption:
-            case CommandCode::WriteWithoutEncryption:
-            case CommandCode::SearchServiceCode:
-            case CommandCode::Authentication1:
-            case CommandCode::Authentication2:
-            case CommandCode::RequestServicev2:
-            case CommandCode::ResetMode:
-                return receive_standard_callback_plain(rx, rx_len, tx);
-            
-            case CommandCode::Read:
-            case CommandCode::Write:
-                return receive_standard_callback_secure(rx, rx_len, tx);
-
-            default:
-                M5_LIB_LOGE(" CMD:%02X %u", rx[1], rx_len);
-                return false;
-        }
     }
 }
 
@@ -961,7 +941,7 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 
         const auto target_system = std::find_if(_emulators.begin(), _emulators.end(),
             [rx](const Emulator &emulator) {
-                return is_system_code_match(rx + 2, emulator.emulatePICC().emulation_sc);
+                return is_system_code_match(rx + 2, emulator.system_code());
             }
         );
         if(target_system == _emulators.end()){
@@ -969,13 +949,15 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
         }
 
         uint8_t SENSF_RES[1 + 8 + 8 + 2] = {m5::stl::to_underlying(ResponseCode::Polling)};
-        memcpy(SENSF_RES + 1, (*target_system).emulatePICC().m, 16);
+
+        memcpy(SENSF_RES + 1, (*target_system).idm(), 8);
+        memcpy(SENSF_RES + 9, _pmm, 8);
 
         // Request code
         bool req = (rx[4] == 1 || rx[4] == 2);
         if (rx[4] == 1) {  // request system code
-            SENSF_RES[17] = ((*target_system).emulatePICC().emulation_sc >> 8) & 0xff;
-            SENSF_RES[18] = ((*target_system).emulatePICC().emulation_sc & 0xff);
+            SENSF_RES[17] = ((*target_system).system_code() >> 8) & 0xff;
+            SENSF_RES[18] = ((*target_system).system_code() & 0xff);
         }
         if (rx[4] == 2) {  // request communication performance
             SENSF_RES[17] = 0x00;
@@ -986,7 +968,7 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
         // Timeslot
         if (rx[5]) {
             const uint8_t slot_count = 1 << rx[5];
-            const uint8_t slot       = ((*target_system).emulatePICC().idm[7] ^ (*target_system).emulatePICC().idm[6]) & (slot_count - 1);
+            const uint8_t slot       = ((*target_system).idm()[7] ^ (*target_system).idm()[6]) & (slot_count - 1);
             m5::utility::delayMicroseconds(2417 + slot * 1208);
         }
 
@@ -1003,7 +985,7 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 
         const auto target_system = std::find_if(_emulators.begin(), _emulators.end(),
             [rx](const Emulator &emulator) {
-                return std::memcmp(rx + 2, emulator.emulatePICC().idm, 8) == 0;
+                return std::memcmp(rx + 2, emulator.idm(), 8) == 0;
             }
         );
         if(target_system == _emulators.end()){
@@ -1012,11 +994,11 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 
         std::vector<uint8_t> tx(1 + 8 + 1 + (2 * _emulators.size()));
         tx[0] = m5::stl::to_underlying(ResponseCode::RequestSystemCode);
-        memcpy(tx.data() + 1, (*target_system).emulatePICC().idm, 8);
+        memcpy(tx.data() + 1, (*target_system).idm(), 8);
         tx[9] = _emulators.size();
 
         for(uint8_t i = 0; i < _emulators.size(); i++){
-            const uint16_t sc = _emulators[i].emulatePICC().emulation_sc;
+            const uint16_t sc = _emulators[i].system_code();
             tx[10 + (i * 2)] = (sc >> 8) & 0xff;
             tx[10 + (i * 2) + 1] = sc & 0xff;
         }
@@ -1040,7 +1022,7 @@ EmulationLayerF::State EmulationLayerF::receive_callback(const State s, const ui
 
         for(uint8_t i = 0; i < _emulators.size(); i++){
             auto& system = _emulators[i];
-            if(std::memcmp(system.emulatePICC().idm, _emulators[_current_system_index].emulatePICC().idm, 8) == 0){
+            if(std::memcmp(system.idm(), _emulators[_current_system_index].idm(), 8) == 0){
                 continue;
             }
 
@@ -1104,35 +1086,70 @@ bool EmulationLayerF::SDStorage::close(){
     return true;
 }
 
-uint16_t EmulationLayerF::SDStorage::read(const uint16_t index, uint8_t* buf, const uint16_t size){
-    if(!_initialized){
+bool EmulationLayerF::SDStorage::begin(fs::SDFS& sd, const std::string& filename){
+    if(_initialized){
+        return true;
+    }
+    _initialized = true;
+
+    this->_sd = &sd;
+    this->_filename = filename;
+
+    open();
+    const uint16_t memory_size = _fp.available() & 0xfff0;
+    _block_memory.resize(memory_size);
+    const size_t readed = _fp.read(_block_memory.data(), memory_size);
+
+    if(memory_size != readed){
+        close();
+        _initialized = false;
         return false;
     }
-    if(!_is_open){
-        return 0;
-    }
-    if(!_fp.seek(index * 16)){
-        return 0;
-    }
-    const size_t readed = _fp.read(buf, size * 16);
 
-    return readed >> 4;
+    _changed = false;
+
+    return close();
 }
 
-uint16_t EmulationLayerF::SDStorage::write(const uint16_t index, const uint8_t* buf, const uint16_t size){
+bool EmulationLayerF::SDStorage::read(const uint16_t block_address, const uint16_t block_num, uint8_t* buf, const bool cyclic) const{
     if(!_initialized){
         return false;
     }
+
+    if((_block_memory.size() >> 4) <= (block_address + 1 + block_num)){
+        return false;
+    }
+
+    const size_t address = (block_address + 1) * 16;
+
+    if(cyclic){
+        const uint16_t block_count = (((uint16_t)_block_memory[address] & 0x3F) << 8) | _block_memory[address + 1];
+        const uint16_t cyclic_index = (((uint16_t)_block_memory[address + 4]) << 8) | _block_memory[address + 5];
+
+        const size_t read_address = ((cyclic_index + block_num) % (block_count - 1)) * 16;
+
+        memcpy(buf, _block_memory.data() + read_address, 16);
+    }
+    else{
+        memcpy(buf, _block_memory.data() + address + (block_num * 16), 16);
+    }
+
+    return true;
+}
+
+void EmulationLayerF::SDStorage::update(){
+    if(!_initialized){
+        return;
+    }
     if(!_is_open){
-        return 0;
+        return;
+    }
+    if(!_changed){
+        return;
     }
 
-    if(!_fp.seek(index * 16)){
-        return 0;
-    }
-    const size_t written = _fp.write(buf, size * 16);
-
-    return written >> 4;
+    _fp.write(_block_memory.data(), _block_memory.size());
+    _fp.flush();
 }
 
 }  // namespace nfc

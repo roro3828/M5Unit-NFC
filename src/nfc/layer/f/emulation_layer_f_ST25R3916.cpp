@@ -77,6 +77,7 @@ struct ListenerST25R3916ForF final : EmulationLayerF::Adapter {
     */
 
     virtual bool start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res = true, const bool listen_any = false) override;
+    virtual bool start_emulation(const uint16_t sc, const uint8_t idm[8], const uint8_t pmm[8], const bool auto_res = true, const bool listen_any = false) override;
     virtual bool stop_emulation() override;
     virtual bool transmit(const uint8_t* tx, const uint16_t tx_len, const uint32_t timeout_ms) override;
 
@@ -92,6 +93,7 @@ struct ListenerST25R3916ForF final : EmulationLayerF::Adapter {
     EmulationLayerF::State goto_selected();
 
     virtual bool set_sens_res(const m5::nfc::f::PICC& picc) override;
+    virtual bool set_sens_res(const uint16_t sc, const uint8_t idm[8], const uint8_t pmm[8]) override;
     bool set_tsn();
 
     //
@@ -131,15 +133,23 @@ bool ListenerST25R3916ForF::set_sens_res(const m5::nfc::f::PICC& picc)
         return false;
     }
 
+    return set_sens_res(picc.emulation_sc, picc.idm, picc.pmm);
+}
+bool ListenerST25R3916ForF::set_sens_res(const uint16_t sc, const uint8_t idm[8], const uint8_t pmm[8])
+{
     uint8_t wbuf[21]{};
     uint32_t offset{};
     // SC(2)
-    wbuf[offset++] = picc.emulation_sc >> 8;
-    wbuf[offset++] = picc.emulation_sc & 0xFF;
+    wbuf[offset++] = sc >> 8;
+    wbuf[offset++] = sc & 0xFF;
     // SENSF_RES(19)
     wbuf[offset++] = m5::stl::to_underlying(ResponseCode::Polling);
-    memcpy(wbuf + offset, picc.m, 16);
-    offset += 16;
+    // IDm
+    memcpy(wbuf + offset, idm, 8);
+    offset += 8;
+    // PMm
+    memcpy(wbuf + offset, pmm, 8);
+    offset += 8;
     wbuf[offset++] = 0;  // SENSF_REQ, request code 0x01/0x02 NOT support ST25R3916
     wbuf[offset++] = 0;  // SENSF_REQ, request code 0x01/0x02 NOT support ST25R3916
 
@@ -171,9 +181,12 @@ bool ListenerST25R3916ForF::set_tsn()
     return _u.writePtMemoryTSN(tsn, sizeof(tsn));
 }
 
-bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res, const bool listen_any)
+bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res, const bool listen_any){
+    return start_emulation(picc.emulation_sc, picc.idm, picc.pmm, auto_res, listen_any);
+}
+bool ListenerST25R3916ForF::start_emulation(const uint16_t sc, const uint8_t idm[8], const uint8_t pmm[8], const bool auto_res, const bool listen_any)
 {
-    if (!(set_sens_res(picc) && set_tsn())) {
+    if (!(set_sens_res(sc, idm, pmm) && set_tsn())) {
         return false;
     }
 
