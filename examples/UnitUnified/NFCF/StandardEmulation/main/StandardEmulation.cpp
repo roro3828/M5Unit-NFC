@@ -50,14 +50,16 @@ m5::unit::CapCC1101NFC unit{};  // CapCC1101 (SPI)
 #endif
 m5::nfc::EmulationLayerF emu_f{unit};
 
-PICC picc{};
+PICC picc{}, picc2{};
 
 constexpr Type type{Type::FeliCaStandard};
 // constexpr uint8_t IDm[8] = {0x01, 0x2E, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};  // See also SONY specification
 // documents
 constexpr uint8_t IDm[8] = {0x01, 0x2E, 0x50, 0xE5, 0x3C, 0x4B, 0x4F, 0x29};
+constexpr uint8_t IDm2[8] = {0xff, 0x2E, 0x50, 0xE5, 0x3C, 0x4B, 0x4F, 0x29};
 constexpr uint8_t PMm[8] = {0x04, 0x01, 0x84, 0x84, 0x8F, 0x89, 0x94, 0xFF};  // See also SONY specification documents
 constexpr uint8_t IDi[8] = "abcdefg";
+constexpr uint8_t IDi2[8] = "hijklmn";
 constexpr uint8_t PMi[8] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 uint8_t picc_memory[] = {
     // Service 1 (Blocks 0-3) - Offset: 0
@@ -327,8 +329,9 @@ void setup()
     //
     lcd.startWrite();
     lcd.fillScreen(TFT_RED);
-    if (picc.emulate(type, IDm, PMm, 0x0003)) {
-        if (emu_f.begin(
+    if (picc.emulate(type, IDm, PMm, 0x0003) && picc2.emulate(type, IDm2, PMm, 0xFE00)) {
+        const std::vector<EmulationLayerF::Emulator> emulators ={
+            EmulationLayerF::Emulator(
             picc,
             picc_memory,
             sizeof(picc_memory),
@@ -337,10 +340,20 @@ void setup()
             system_key,
             areas,
             services
-            )) {
+        ), EmulationLayerF::Emulator(
+            picc2,
+            picc_memory,
+            sizeof(picc_memory),
+            IDi2,
+            PMi,
+            system_key,
+            areas,
+            services
+        )};
+        if (emu_f.begin(emulators)) {
             lcd.fillScreen(TFT_DARKGREEN);
             lcd.setCursor(0, 16);
-            const auto& e_picc = emu_f.emulatePICC();
+            const auto& e_picc = emu_f.emulators()[0].emulatePICC();
             M5.Log.printf("Emulation:%s %s:%s SC:%02X\n", e_picc.typeAsString().c_str(), e_picc.idmAsString().c_str(),
                         e_picc.pmmAsString().c_str(), e_picc.emulation_sc);
             lcd.printf("Emulation: %s\nIDm: %s\nPMm: %s\nSC: %02X\n", e_picc.typeAsString().c_str(),
@@ -349,11 +362,11 @@ void setup()
                         e_picc.emulation_sc);
             lcd.printf("IDi: ");
             for(uint8_t i = 0; i < 8; i++){
-                lcd.printf("%02X", emu_f.idi[i]);
+                lcd.printf("%02X", emu_f.emulators()[0].idi[i]);
             }
             lcd.printf("\nPMi: ");
             for(uint8_t i = 0; i < 8; i++){
-                lcd.printf("%02X", emu_f.pmi[i]);
+                lcd.printf("%02X", emu_f.emulators()[0].pmi[i]);
             }
             lcd.printf("\n");
         } else {

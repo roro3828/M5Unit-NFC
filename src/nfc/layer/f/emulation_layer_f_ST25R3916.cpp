@@ -91,7 +91,8 @@ struct ListenerST25R3916ForF final : EmulationLayerF::Adapter {
     EmulationLayerF::State goto_communicated();
     EmulationLayerF::State goto_selected();
 
-    bool load_config(const m5::nfc::f::PICC& picc);
+    virtual bool set_sens_res(const m5::nfc::f::PICC& picc) override;
+    bool set_tsn();
 
     //
     uint32_t get_irq(const uint32_t mask_bits);
@@ -123,7 +124,7 @@ uint32_t ListenerST25R3916ForF::get_irq(const uint32_t bits)
     return irq32;
 }
 
-bool ListenerST25R3916ForF::load_config(const m5::nfc::f::PICC& picc)
+bool ListenerST25R3916ForF::set_sens_res(const m5::nfc::f::PICC& picc)
 {
     if (!picc.valid()) {
         M5_LIB_LOGE("Invalid PICC");
@@ -144,6 +145,11 @@ bool ListenerST25R3916ForF::load_config(const m5::nfc::f::PICC& picc)
 
     //    m5::utility::log::dump(wbuf, offset, false);
 
+    return _u.writePtMemoryF(wbuf, sizeof(wbuf));
+}
+
+bool ListenerST25R3916ForF::set_tsn()
+{
     // TSN: 24 4-bit random numbers are stored
     // Make it as even as possible
     ESP32Rng rng;
@@ -162,12 +168,12 @@ bool ListenerST25R3916ForF::load_config(const m5::nfc::f::PICC& picc)
         const uint8_t low  = tmp[i * 2 + 1] & 0x0F;
         tsn[i]             = static_cast<uint8_t>((high << 4) | low);
     }
-    return _u.writePtMemoryF(wbuf, sizeof(wbuf)) && _u.writePtMemoryTSN(tsn, sizeof(tsn));
+    return _u.writePtMemoryTSN(tsn, sizeof(tsn));
 }
 
 bool ListenerST25R3916ForF::start_emulation(const m5::nfc::f::PICC& picc, const bool auto_res, const bool listen_any)
 {
-    if (!load_config(picc)) {
+    if (!(set_sens_res(picc) && set_tsn())) {
         return false;
     }
 
